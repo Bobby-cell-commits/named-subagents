@@ -235,6 +235,14 @@ managers, and the parity gate.
 | `skill/named-fanout/` | Claude Code skill wrapping the CLI |
 | `FINDINGS.md` / `COMMUNITY.md` | research record + ecosystem survey |
 | `SECURITY.md` / `CONTRIBUTING.md` | threat model / parity discipline |
+| `ROADMAP.md` | candidate improvements for future releases |
+
+## Roadmap
+
+Planned and candidate work lives in [`ROADMAP.md`](ROADMAP.md) — adoption
+artifacts, release automation with supply-chain provenance, a config
+auto-load opt-out, type-surface verification, and a possible install-once
+auto-namer. Contributions welcome (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
 ## License
 
