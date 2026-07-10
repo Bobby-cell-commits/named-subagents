@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python test_named_subagents.py
+      - name: Demo smoke
+        run: python demo.py > /dev/null
+      - name: Install smoke (wheel ships registry.json)
+        run: |
+          pip install --quiet .
+          named-subagents --version
+          named-subagents allocate --category explore --count 3
+          python -c "import named_subagents, os; r = named_subagents.Registry.load(); assert r.total_names() >= 395, r.total_names(); print('registry OK from installed package')"
+      - name: Doctor
+        run: named-subagents doctor
+
+  node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Unit tests
+        run: node js/test_named_subagents.mjs
+      - name: Demo smoke
+        run: node js/demo.mjs > /dev/null
+      - name: Pack smoke (prepack copies canonical registry)
+        working-directory: js
+        run: |
+          npm pack --dry-run
+          test -f registry.json && cmp registry.json ../named_subagents/registry.json
+
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Cross-language parity
+        run: bash scripts/parity_check.sh

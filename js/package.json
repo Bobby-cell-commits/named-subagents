@@ -1,0 +1,50 @@
+{
+  "name": "named-subagents",
+  "version": "0.2.0",
+  "description": "Themed, non-repeating nicknames for Claude Code subagents — a userspace port of Codex's nickname_candidates (JS/ESM twin of the Python reference)",
+  "type": "module",
+  "main": "./named_subagents.mjs",
+  "exports": {
+    ".": {
+      "types": "./named_subagents.d.ts",
+      "default": "./named_subagents.mjs"
+    }
+  },
+  "types": "./named_subagents.d.ts",
+  "bin": {
+    "named-subagents": "./cli.mjs"
+  },
+  "files": [
+    "named_subagents.mjs",
+    "named_subagents.d.ts",
+    "cli.mjs",
+    "registry.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT",
+  "author": "Bobby-cell-commits",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bobby-cell-commits/named-subagents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Bobby-cell-commits/named-subagents/issues"
+  },
+  "homepage": "https://github.com/Bobby-cell-commits/named-subagents#readme",
+  "keywords": [
+    "claude-code",
+    "subagents",
+    "agents",
+    "nicknames",
+    "fan-out",
+    "orchestration",
+    "multi-agent"
+  ],
+  "scripts": {
+    "test": "node test_named_subagents.mjs",
+    "prepack": "node -e \"const fs=require('fs');fs.copyFileSync('../named_subagents/registry.json','./registry.json');fs.copyFileSync('../README.md','./README.md')\""
+  }
+}

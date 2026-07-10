@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.tmp
+*.ledger.json
+.named-subagents-ledger.json
+
+# packaging artifacts
+build/
+dist/
+*.egg-info/
+node_modules/
+*.tgz
