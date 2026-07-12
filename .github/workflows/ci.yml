@@ -24,12 +24,12 @@ jobs:
         run: python test_named_subagents.py
       - name: Demo smoke
         run: python demo.py > /dev/null
-      - name: Install smoke (wheel ships registry.json)
+      - name: Install smoke (wheel ships registry.json + py.typed)
         run: |
           pip install --quiet .
           named-subagents --version
           named-subagents allocate --category explore --count 3
-          python -c "import named_subagents, os; r = named_subagents.Registry.load(); assert r.total_names() >= 395, r.total_names(); print('registry OK from installed package')"
+          python -c "import named_subagents, os; d = os.path.dirname(named_subagents.__file__); r = named_subagents.Registry.load(); assert r.total_names() >= 395, r.total_names(); assert os.path.exists(os.path.join(d, 'py.typed')), 'py.typed missing from installed wheel'; print('registry + py.typed OK from installed package')"
       - name: Doctor
         run: named-subagents doctor
 
@@ -53,6 +53,19 @@ jobs:
         run: |
           npm pack --dry-run
           test -f registry.json && cmp registry.json ../named_subagents/registry.json
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: TypeScript surface check (.d.ts exercised by types_test.ts)
+        # No install step: run tsc straight from the registry via npx, keeping
+        # the package's zero-dependency posture (typescript is not even a devDep).
+        working-directory: js
+        run: npx -y -p typescript@5 tsc -p tsconfig.json
 
   parity:
     runs-on: ubuntu-latest

@@ -3,6 +3,8 @@
 export const VERSION: string;
 export const GEN_SEP: string;
 export const CONFIG_ENV_VAR: string;
+export const NO_CWD_CONFIG_ENV_VAR: string;
+export const CWD_CONFIG_ENV_VAR: string;
 export const LEDGER_VERSION: number;
 export const NAME_PATTERN: string;
 export const CATEGORY_KEY_PATTERN: string;
@@ -57,15 +59,24 @@ export class Registry {
   byKeyword(task: string): string | null;
 }
 
+/** Whether the implicit ./.named-subagents.json cwd config is auto-loaded.
+ * Opt-in as of 0.3 (the one untrusted-input surface). Precedence: explicit
+ * `cliOverride` > NAMED_SUBAGENTS_NO_CWD_CONFIG (off) > NAMED_SUBAGENTS_CWD_CONFIG
+ * (on) > default off. */
+export function cwdConfigEnabled(cliOverride?: boolean | null): boolean;
+
 /** Load the user config. Search order: explicit path > $NAMED_SUBAGENTS_CONFIG
- * > ./.named-subagents.json > ~/.config/named-subagents/config.json. */
-export function loadConfig(path?: string | null): UserConfig;
+ * > (opt-in) ./.named-subagents.json > ~/.config/named-subagents/config.json.
+ * `allowCwd` gates the cwd candidate (null -> resolve via cwdConfigEnabled()). */
+export function loadConfig(path?: string | null, allowCwd?: boolean | null): UserConfig;
 
 /** loadConfig + Registry.load in one call (config may carry runtime-only keys
- * such as "pins" that the Registry doesn't store). */
+ * such as "pins" that the Registry doesn't store). `allowCwd` is threaded to
+ * loadConfig. */
 export function loadWithConfig(
   registryPath?: string | null,
   configPath?: string | null,
+  allowCwd?: boolean | null,
 ): { registry: Registry; config: UserConfig };
 
 export interface ResolveOpts {
@@ -83,6 +94,10 @@ export interface LedgerRecord {
   total_allocated?: number;
   [k: string]: unknown;
 }
+
+/** Human reason string if `rec` is a malformed ledger category record, else
+ * null (the doctor uses it to FAIL-report instead of crashing). */
+export function ledgerRecordIssue(rec: unknown): string | null;
 
 export class Ledger {
   path: string | null;

@@ -20,6 +20,7 @@ import {
   installedAgentNames, ledgerRecordIssue, ledgerStats, personaPreamble,
   toLabels, toWorkflow, toSwarm, stripGen, pyDumps, pyRound1, formatPyFloat,
 } from "./named_subagents.mjs";
+import * as NS_ALL from "./named_subagents.mjs";
 
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(JS_DIR);
@@ -36,6 +37,27 @@ function section(t) { console.log(`\n== ${t} ==`); }
 function tmp() { return mkdtempSync(join(tmpdir(), "ns-")); }
 function throws(fn, errClass = null) {
   try { fn(); return false; } catch (e) { return errClass ? e instanceof errClass : true; }
+}
+
+// --------------------------------------------------------------------------- //
+section("Type surface: named_subagents.d.ts matches the runtime (drift guard)");
+{
+  // Cheap, zero-tooling reconciliation of the hand-written .d.ts against the
+  // actual runtime exports (the deeper signature check is `tsc -p tsconfig.json`
+  // over types_test.ts). This would have caught the pre-0.3 `ledgerRecordIssue`
+  // gap. Leading-underscore exports are intentional internals, excluded.
+  const dts = readFileSync(join(JS_DIR, "named_subagents.d.ts"), "utf8");
+  const declared = new Set(
+    [...dts.matchAll(/^export\s+(?:declare\s+)?(?:const|function|class)\s+([A-Za-z_$][\w$]*)/gm)]
+      .map((m) => m[1]),
+  );
+  const runtime = Object.keys(NS_ALL).filter((k) => !k.startsWith("_"));
+  const undeclared = runtime.filter((k) => !declared.has(k));
+  check(".d.ts declares every public runtime export", undeclared.length === 0,
+    `undeclared: ${undeclared.join(", ")}`);
+  const phantom = [...declared].filter((k) => !(k in NS_ALL));
+  check("every .d.ts value declaration exists at runtime", phantom.length === 0,
+    `phantom: ${phantom.join(", ")}`);
 }
 
 // --------------------------------------------------------------------------- //
