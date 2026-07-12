@@ -26,6 +26,7 @@ Two layers, mirroring Codex:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -33,6 +34,11 @@ import re
 import stat
 import tempfile
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
+
+try:
+    import fcntl  # POSIX advisory file locks; absent on Windows
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None  # type: ignore[assignment]
 
 __version__ = "0.2.0"
 
@@ -476,17 +482,25 @@ class Ledger:
     def __init__(self, path: Optional[str] = None):
         self.path = path
         self.state: Dict[str, object] = {}
-        if path and os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    # parse_constant rejects NaN/Infinity so Python matches JS's
-                    # standard JSON.parse (which refuses them) -> a NaN-laced
-                    # ledger reads as corrupt->fresh in BOTH ports, not divergent.
-                    loaded = json.load(fh, parse_constant=_reject_constant)
-                if isinstance(loaded, dict):
-                    self.state = loaded
-            except (ValueError, OSError):
-                self.state = {}  # corrupt/unreadable -> fresh, never crash
+        self._load()
+
+    def _load(self) -> None:
+        """(Re)read state from disk; corrupt/unreadable/missing -> empty (never
+        crashes). Called at construction, and again inside lock() so a critical
+        section reads a concurrent writer's changes before it allocates.
+
+        parse_constant rejects NaN/Infinity so Python matches JS's standard
+        JSON.parse -> a NaN-laced ledger reads as corrupt->fresh in BOTH ports.
+        """
+        if not (self.path and os.path.exists(self.path)):
+            self.state = {}
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh, parse_constant=_reject_constant)
+            self.state = loaded if isinstance(loaded, dict) else {}
+        except (ValueError, OSError):
+            self.state = {}  # corrupt/unreadable -> fresh, never crash
 
     # --- internal ----------------------------------------------------------- #
     def _rec(self, category: str) -> dict:
@@ -602,6 +616,56 @@ class Ledger:
             except OSError:
                 pass
             raise
+
+    @contextlib.contextmanager
+    def lock(self):
+        """Hold an exclusive cross-process lock around a load->allocate->save
+        critical section, closing the single-writer race (SECURITY.md). Opt-in::
+
+            led = Ledger(path)
+            with led.lock():        # blocks for the lock, then reloads fresh state
+                names = allocate("explore", 3, reg, ledger=led)
+                led.save()
+
+        In-memory ledgers (path=None) and platforms without ``fcntl`` (Windows)
+        yield without a real lock -- serialize your own writers there.
+        """
+        if not self.path or fcntl is None:
+            yield self
+            return
+        fd = os.open(self.path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._load()  # freshest state now that we hold the lock
+            yield self
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    @contextlib.contextmanager
+    def session(self):
+        """Draw names inside the block; auto-release them on exit so short-lived
+        names recycle without manual ``release()`` calls::
+
+            with led.session():
+                names = allocate("explore", 3, reg, ledger=led)
+                ...                       # use names
+            # the 3 base names are back in the pool
+
+        Best-effort: releases the base names newly added to each category's
+        ``used`` during the block (sorted, so both ports match). A draw that
+        crossed a generation boundary may not fully recycle, since ``release()``
+        targets the current generation.
+        """
+        before = {c: set(self.used(c)) for c in self.state if c != "_v"}
+        try:
+            yield self
+        finally:
+            for c in [c for c in self.state if c != "_v"]:
+                for name in sorted(set(self.used(c)) - before.get(c, set())):
+                    self.release(c, name)
 
 
 # --------------------------------------------------------------------------- #

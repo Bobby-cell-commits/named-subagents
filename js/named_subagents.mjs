@@ -618,6 +618,31 @@ export class Ledger {
       }
     }
   }
+
+  /** Draw names inside `fn(ledger)`; auto-release them afterward so short-lived
+   * names recycle without manual release() calls. Best-effort: releases the base
+   * names newly added to each category's `used` during the call (sorted, so both
+   * ports match). A draw that crossed a generation boundary may not fully
+   * recycle. Returns fn's result. Callback form = the JS analogue of Python's
+   * `with ledger.session():`. (Cross-process locking is Python/Unix-only — a
+   * Node fan-out is typically single-process; serialize writers if not.) */
+  session(fn) {
+    const before = {};
+    for (const c of Object.keys(this.state)) {
+      if (c !== "_v") before[c] = new Set(this.used(c));
+    }
+    try {
+      return fn(this);
+    } finally {
+      for (const c of Object.keys(this.state)) {
+        if (c === "_v") continue;
+        const seen = before[c] || new Set();
+        for (const name of [...new Set(this.used(c))].filter((n) => !seen.has(n)).sort()) {
+          this.release(c, name);
+        }
+      }
+    }
+  }
 }
 
 // --------------------------------------------------------------------------- //

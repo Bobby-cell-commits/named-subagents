@@ -68,10 +68,17 @@ instructions or fake generation suffixes through any of these fields. Controls:
 The ledger uses exclusive-create temp files and an atomic rename, so a write is
 never torn and never follows a symlink. It does **not** lock against *concurrent*
 writers: two processes that load the same ledger before either saves can each
-draw the same "unique" name (a classic read-modify-write race). If you fan out
-across separate OS processes sharing one ledger, serialize their allocations or
-give each its own ledger file. Within a single process (the common case — one
-orchestrator dispatching many agents) there is no race.
+draw the same "unique" name (a classic read-modify-write race). Within a single
+process (the common case — one orchestrator dispatching many agents) there is no
+race.
+
+Since 0.3 the **Python** port offers an **opt-in** `with ledger.lock():` context
+manager (POSIX `flock` on a `<ledger>.lock` sidecar) that holds an exclusive
+cross-process lock and reloads fresh state for the whole load→allocate→save
+critical section, closing this race for genuine multi-process fan-out. It is a
+no-op on non-POSIX platforms (e.g. Windows) and for in-memory ledgers. The JS
+port has no stdlib `flock`, so if you fan out across separate OS processes there,
+serialize their allocations or give each its own ledger file.
 
 ### What this library will never do
 

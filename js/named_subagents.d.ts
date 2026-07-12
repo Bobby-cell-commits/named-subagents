@@ -115,6 +115,9 @@ export class Ledger {
   unretire(category: string, name: string): boolean;
   reset(category?: string | null): void;
   save(): void;
+  /** Draw names inside `fn`, auto-release them afterward (recycle short-lived
+   * names). Returns fn's result. JS analogue of Python's `with ledger.session():`. */
+  session<T>(fn: (ledger: Ledger) => T): T;
 }
 
 export interface AllocateOpts {

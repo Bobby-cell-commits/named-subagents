@@ -40,6 +40,7 @@ const rc: { registry: Registry; config: UserConfig } = loadWithConfig(null, null
 const cat: string = resolveCategory(reg, { role: "Explore", task: "map", category: null });
 const names: string[] = allocate("explore", 3, reg, { ledger: null, avoid: ["x"] });
 const led: Ledger = new Ledger(null);
+const sess: string[] = led.session((l) => l.used("explore"));
 const stats: LedgerStats = ledgerStats(reg, led);
 const plan: Assignment[] = planFanout(["a", "b"], reg, { ledger: led, perTask: true });
 const one: Assignment = assignOne("task", reg, { withBio: true });
@@ -85,7 +86,7 @@ cwdConfigEnabled("yes");
 // failure (each name here had to resolve against the .d.ts to type-check).
 export const _surface = [
   _v, _g, _ce, _nc, _cc, _lv, _np, _ck, _du, reg, reg2, cfg, rc, cat, names, led,
-  stats, plan, one, kwargs, labels, wf, sw, pre, attributed, issue, enabled,
-  stripped, valid, installed, dumped, floatRepr, err, _cs, _rd, _ro, _lr, _ao,
-  _sr, _bo, _fo, _asg,
+  stats, sess, plan, one, kwargs, labels, wf, sw, pre, attributed, issue,
+  enabled, stripped, valid, installed, dumped, floatRepr, err, _cs, _rd, _ro,
+  _lr, _ao, _sr, _bo, _fo, _asg,
 ] as const;

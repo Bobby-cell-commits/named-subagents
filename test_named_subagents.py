@@ -509,6 +509,42 @@ check("idempotent on a repaired report",
       ns.attribute("Magellan", ns.attribute("Magellan", "[Cook]\nbody")) == "[Magellan]\nbody")
 
 # --------------------------------------------------------------------------- #
+section("Sessions + locking: session() auto-recycles, lock() serializes")
+with tempfile.TemporaryDirectory() as d:
+    reg = ns.Registry.load()
+    lp = os.path.join(d, "ledger.json")
+    led = ns.Ledger(lp)
+    with led.session():
+        drawn = ns.allocate("explore", 3, reg, ledger=led)
+    check("session drew 3 names", len(drawn) == 3)
+    check("session released the drawn names on exit", led.used("explore") == [])
+    with led.session():
+        redraw = ns.allocate("explore", 3, reg, ledger=led)
+    check("recycled names are redrawable", redraw == drawn)
+    keep = ns.allocate("explore", 2, reg, ledger=led)  # persisted (no session)
+    with led.session():
+        inblock = ns.allocate("explore", 2, reg, ledger=led)
+    used_now = set(led.used("explore"))
+    check("pre-session names kept", set(ns._strip_gen(n) for n in keep) <= used_now)
+    check("in-session names released", not (set(ns._strip_gen(n) for n in inblock) & used_now))
+    # lock(): reload-under-lock picks up a concurrent external write
+    lp2 = os.path.join(d, "ledger2.json")
+    with open(lp2, "w") as fh:
+        json.dump({"_v": 2}, fh)
+    led3 = ns.Ledger(lp2)
+    with open(lp2, "w") as fh:  # simulate another process writing between load + lock
+        json.dump({"_v": 2, "explore": {"used": ["Beacon"], "generation": 1,
+                                         "retired": [], "total_allocated": 1}}, fh)
+    check("in-memory state stale before lock", led3.used("explore") == [])
+    with led3.lock():
+        check("lock() reloaded the concurrent write", led3.used("explore") == ["Beacon"])
+        n = ns.allocate("reflect", 1, reg, ledger=led3)
+        led3.save()
+    check("lock() critical section persisted", ns.Ledger(lp2).used("reflect") == [ns._strip_gen(n[0])])
+    with ns.Ledger(None).lock():
+        check("lock() on an in-memory ledger is a no-op", True)
+
+# --------------------------------------------------------------------------- #
 section("Config (D5): search order")
 with tempfile.TemporaryDirectory() as d:
     explicit_p = os.path.join(d, "explicit.json")

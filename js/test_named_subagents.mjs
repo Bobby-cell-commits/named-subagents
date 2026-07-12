@@ -508,6 +508,27 @@ section("Attribution: attribute() verifies/repairs the [Nickname] prefix");
 }
 
 // --------------------------------------------------------------------------- //
+section("Sessions: session() auto-recycles short-lived names");
+{
+  const d = tmp();
+  const reg = Registry.load();
+  const lp = join(d, "ledger.json");
+  const led = new Ledger(lp);
+  const drawn = led.session((l) => allocate("explore", 3, reg, { ledger: l }));
+  check("session drew 3 names", drawn.length === 3);
+  check("session released the drawn names on exit", led.used("explore").length === 0);
+  const redraw = led.session((l) => allocate("explore", 3, reg, { ledger: l }));
+  check("recycled names are redrawable", JSON.stringify(redraw) === JSON.stringify(drawn));
+  const keep = allocate("explore", 2, reg, { ledger: led });
+  const inblock = led.session((l) => allocate("explore", 2, reg, { ledger: l }));
+  const usedNow = new Set(led.used("explore"));
+  check("pre-session names kept", keep.map(stripGen).every((n) => usedNow.has(n)));
+  check("in-session names released", inblock.map(stripGen).every((n) => !usedNow.has(n)));
+  check("session returns fn result", Array.isArray(inblock));
+  rmSync(d, { recursive: true, force: true });
+}
+
+// --------------------------------------------------------------------------- //
 section("Config (D5): search order");
 {
   const d = tmp();
