@@ -13,16 +13,20 @@
  *   named-subagents doctor --ledger .ledger.json --json
  *   named-subagents bio Magellan
  */
-import { readFileSync, statSync, unlinkSync } from "node:fs";
+import {
+  closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync,
+  renameSync, statSync, unlinkSync, writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   Ledger, LEDGER_VERSION, PoolExhaustedError, Registry, VERSION,
   allocate, installedAgentNames, ledgerRecordIssue, ledgerStats, loadWithConfig,
-  planFanout, pyDumps, formatPyFloat, resolveCategory, stripGen, validName,
-  toLabels, toSwarm, toWorkflow, _hasOwn as hasOwn,
+  personaPreamble, planFanout, pyDumps, formatPyFloat, resolveCategory, stripGen,
+  validName, toLabels, toSwarm, toWorkflow, _hasOwn as hasOwn,
 } from "./named_subagents.mjs";
 
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -36,7 +40,7 @@ const STATS_FLOAT_KEYS = new Set(["pct_used"]);
 const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config", "explain"]);
 const COMMANDS = new Set([
   "categories", "resolve", "allocate", "assign",
-  "release", "retire", "unretire", "stats", "doctor", "bio",
+  "release", "retire", "unretire", "stats", "doctor", "bio", "hook",
 ]);
 const USAGE =
   "usage: named-subagents [--registry PATH] [--config PATH] "
@@ -575,6 +579,273 @@ function cmdDoctor(opts) {
 }
 
 // --------------------------------------------------------------------------- //
+// Auto-namer hook — install once; nickname every subagent dispatch.
+// Twin of the Python cli.py hook section; `hook run` output is parity-identical.
+// --------------------------------------------------------------------------- //
+const HOOK_MARKER = "named-subagents-autonamer";      // sentinel in the registered command
+const PERSONA_SIG = "parallel agents in this run.";   // idempotency probe (from personaPreamble)
+const DISPATCH_TOOLS = new Set(["Agent", "Task"]);    // Task -> Agent rename (CC 2.1.63; alias kept)
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+function hookLedgerPath() {
+  const env = process.env.NAMED_SUBAGENTS_LEDGER;
+  if (env) return env;
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(base, "named-subagents", "hook-ledger.json");
+}
+
+function sleepMs(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* ignore */ }
+}
+
+/** Serialize a load->allocate->save critical section across processes with an
+ * O_EXCL lockfile (Node has no flock; this mirrors the Python Ledger.lock()).
+ * A stale lock (>15s, e.g. a crashed writer) is stolen so it can't wedge dispatches. */
+function withLedgerLock(path, fn) {
+  if (!path) return fn();
+  const lock = path + ".lock";
+  let fd = null;
+  const start = Date.now();
+  for (;;) {
+    try { fd = openSync(lock, "wx"); break; } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > 15000) {
+          // Atomic steal: rename is atomic, so exactly ONE racer removes the stale
+          // lock; the losers get ENOENT and fall through to keep waiting. A blind
+          // unlink+recreate could let two processes both enter the section.
+          const stolen = `${lock}.stale-${process.pid}`;
+          try { renameSync(lock, stolen); unlinkSync(stolen); } catch { /* another racer won the steal */ }
+          continue;
+        }
+      } catch { /* lock vanished between open and stat */ }
+      if (Date.now() - start > 10000) throw new Error("ledger lock timeout");
+      sleepMs(5);
+    }
+  }
+  try { return fn(); }
+  finally {
+    try { closeSync(fd); } catch { /* */ }
+    try { unlinkSync(lock); } catch { /* */ }
+  }
+}
+
+/** Map a PreToolUse event -> the hookSpecificOutput object to emit, or null to
+ * pass the dispatch through. May throw on internal error (caller fails open). */
+function hookMutate(event) {
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
+  if (!isObj(event) || !DISPATCH_TOOLS.has(event.tool_name)) return null;
+  const ti = event.tool_input;
+  if (!isObj(ti)) return null;
+  const str = (v) => (typeof v === "string" ? v : "");
+  const prompt = str(ti.prompt);
+  const description = str(ti.description);
+  const subagentType = str(ti.subagent_type);
+
+  // Never auto-load ./.named-subagents.json — the hook runs in arbitrary
+  // (possibly untrusted) dirs and its output lands in agent prompts.
+  const { registry: reg } = loadWithConfig(null, null, false);
+  // Idempotency: two signals so an empty-prompt dispatch can't double-prefix —
+  // the persona preamble in the prompt, or a description already led by our emoji.
+  if (prompt.includes(PERSONA_SIG)) return null;
+  // Fall back to a description-emoji probe ONLY when there's no prompt (a rare
+  // empty-prompt re-fire). A prompted dispatch is governed by the SIG above, so a
+  // legit description like "📊 Q3 chart" isn't wrongly treated as already-named.
+  if (!prompt && description
+      && Object.keys(reg.categories).some((c) => description.startsWith(reg.emoji(c)))) {
+    return null;
+  }
+  const cat = resolveCategory(reg, { role: subagentType || null, task: description || null });
+
+  const lp = hookLedgerPath();
+  if (lp) mkdirSync(dirname(lp), { recursive: true });
+  const nickname = withLedgerLock(lp, () => {
+    const led = new Ledger(lp);           // loads fresh state under the lock
+    const n = allocate(cat, 1, reg, { ledger: led })[0];
+    led.save();
+    return n;
+  });
+
+  const emoji = reg.emoji(cat);
+  const theme = reg.theme(cat);
+  const bio = process.env.NAMED_SUBAGENTS_HOOK_BIO ? reg.bio(cat, stripGen(nickname)) : null;
+  const updated = { ...ti };
+  updated.description = description
+    ? `${emoji} ${nickname}: ${description}`.trim()
+    : `${emoji} ${nickname}`;
+  if (prompt) updated.prompt = personaPreamble(nickname, theme, bio) + prompt;
+  return { hookEventName: "PreToolUse", updatedInput: updated };
+}
+
+function cmdHookRun() {
+  // FAIL-OPEN: read the event on stdin, emit updatedInput, ALWAYS exit 0. Any
+  // error -> emit nothing -> the dispatch runs with its original input. A broken
+  // namer must never break a fan-out, and must never exit non-zero (2 would block).
+  try {
+    const event = JSON.parse(readFileSync(0, "utf8"));
+    const out = hookMutate(event);
+    if (out !== null) process.stdout.write(pyDumps({ hookSpecificOutput: out }));
+  } catch { /* fail-open by design */ }
+  return 0;
+}
+
+// ---- settings.json management (install / uninstall / status) --------------- //
+function settingsPath(opts) {
+  if (opts.settings) return opts.settings;
+  if (opts.project) return join(opts.project, ".claude", "settings.json");
+  return join(homedir(), ".claude", "settings.json");
+}
+
+function hookCommand() {
+  // Absolute node + absolute cli.mjs path (robust against the bin not being on the
+  // hook's PATH). `--managed-by` is a real (ignored) arg marker, not a shell comment.
+  const cli = fileURLToPath(import.meta.url);
+  return `"${process.execPath}" "${cli}" hook run --managed-by ${HOOK_MARKER}`;
+}
+
+function readSettings(sp) {
+  // { data, error }: data is ALWAYS an object ({} when absent/unreadable); error is
+  // set when the file exists but can't be parsed, so callers refuse to clobber it.
+  if (!existsSync(sp)) return { data: {}, error: null };
+  let data;
+  try { data = JSON.parse(readFileSync(sp, "utf8")); }
+  catch (e) { return { data: {}, error: e.message }; }
+  if (!isObj(data)) return { data: {}, error: "top-level JSON is not an object" };
+  return { data, error: null };
+}
+
+function writeSettings(sp, data, backup = false) {
+  mkdirSync(dirname(sp) || ".", { recursive: true });
+  if (backup && existsSync(sp)) copyFileSync(sp, sp + ".bak");
+  // 'wx' (O_EXCL) + a unique name: a pre-planted `<settings>.tmp` symlink can't
+  // redirect the write (same discipline as Ledger.save()).
+  const tmp = `${sp}.${process.pid}.tmp`;
+  try { unlinkSync(tmp); } catch { /* not present */ }
+  const fd = openSync(tmp, "wx");
+  try {
+    writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");   // std serializer for arbitrary settings
+    closeSync(fd);
+    renameSync(tmp, sp);                                       // atomic
+  } catch (e) {
+    try { closeSync(fd); } catch { /* already closed */ }
+    try { unlinkSync(tmp); } catch { /* nothing to clean */ }  // never leave a stray temp
+    throw e;
+  }
+}
+
+function* iterOurHooks(pre) {
+  for (const m of Array.isArray(pre) ? pre : []) {
+    if (!isObj(m)) continue;
+    for (const h of m.hooks || []) {
+      if (isObj(h) && (h.command || "").includes(HOOK_MARKER)) yield [m, h];
+    }
+  }
+}
+
+function cmdHookInstall(opts) {
+  const sp = settingsPath(opts);
+  const { data, error } = readSettings(sp);
+  if (error) {
+    console.error(`error: ${sp} is not valid settings JSON (${error}); refusing to modify it.\n`
+      + "Fix or remove that file, then re-run `named-subagents hook install`.");
+    return 1;
+  }
+  if (data.hooks === undefined) data.hooks = {};
+  if (!isObj(data.hooks)) { console.error(`error: ${sp} has a non-object 'hooks'; refusing to modify.`); return 1; }
+  if (data.hooks.PreToolUse === undefined) data.hooks.PreToolUse = [];
+  if (!Array.isArray(data.hooks.PreToolUse)) {
+    console.error(`error: ${sp} has a non-list 'hooks.PreToolUse'; refusing to modify.`); return 1;
+  }
+  const existed = existsSync(sp);
+  const cmd = hookCommand();
+  for (const [, h] of iterOurHooks(data.hooks.PreToolUse)) {
+    h.command = cmd;                    // refresh (e.g. new interpreter path); idempotent
+    writeSettings(sp, data, existed);
+    console.log(`auto-namer hook already installed — refreshed the command in ${sp}`);
+    return 0;
+  }
+  data.hooks.PreToolUse.push({ matcher: "Agent|Task", hooks: [{ type: "command", command: cmd }] });
+  writeSettings(sp, data, existed);
+  console.log(`installed the auto-namer hook in ${sp}\n  matcher: Agent|Task\n  command: ${cmd}\n`
+    + "New Claude Code sessions will nickname every subagent dispatch.\n"
+    + "Verify with `named-subagents hook status`.");
+  return 0;
+}
+
+function cmdHookUninstall(opts) {
+  const sp = settingsPath(opts);
+  if (!existsSync(sp)) { console.log(`nothing to remove: ${sp} does not exist`); return 0; }
+  const { data, error } = readSettings(sp);
+  if (error) { console.error(`error: ${sp} is not valid JSON (${error}); refusing to modify.`); return 1; }
+  const pre = isObj(data.hooks) ? data.hooks.PreToolUse : undefined;
+  if (!Array.isArray(pre)) { console.log(`no auto-namer hook found in ${sp}`); return 0; }
+  let removed = 0;
+  const newPre = [];
+  for (const m of pre) {
+    if (!isObj(m) || !Array.isArray(m.hooks)) { newPre.push(m); continue; }  // leave non-hooks blocks as-is
+    const hs = m.hooks;
+    const kept = hs.filter((h) => !(isObj(h) && (h.command || "").includes(HOOK_MARKER)));
+    if (kept.length === hs.length) { newPre.push(m); continue; }             // nothing ours -> untouched
+    removed += hs.length - kept.length;
+    if (kept.length) newPre.push({ ...m, hooks: kept });                     // else drop the emptied block
+  }
+  if (removed) {
+    data.hooks.PreToolUse = newPre;
+    writeSettings(sp, data, true);
+    console.log(`removed the auto-namer hook from ${sp}`);
+  } else {
+    console.log(`no auto-namer hook found in ${sp}`);
+  }
+  return 0;
+}
+
+function cmdHookStatus(opts) {
+  const sp = settingsPath(opts);
+  const { data, error } = readSettings(sp);
+  let installed = false;
+  let cmd = null;
+  const pre = isObj(data.hooks) ? data.hooks.PreToolUse : [];
+  for (const [, h] of iterOurHooks(pre || [])) { installed = true; cmd = h.command; }
+  const lp = hookLedgerPath();
+  const ledExists = existsSync(lp);
+  let allocated = null;
+  if (ledExists) {
+    try {
+      const { registry: reg } = loadWithConfig(null, null, false);
+      allocated = ledgerStats(reg, new Ledger(lp)).totals.total_allocated;
+    } catch { allocated = null; }
+  }
+  const disabled = !!process.env.NAMED_SUBAGENTS_HOOK_DISABLE;
+  if (opts.json) {
+    console.log(pyDumps({
+      settings_path: sp, settings_malformed: !!error, installed, command: cmd,
+      ledger_path: lp, ledger_exists: ledExists, total_allocated: allocated, disabled,
+    }, { indent: 2 }));
+    return 0;
+  }
+  console.log(`settings:   ${sp}${error ? "  ⚠ MALFORMED JSON" : ""}`);
+  console.log(`installed:  ${installed ? "yes" : "no"}`);
+  if (cmd) console.log(`  command:  ${cmd}`);
+  console.log(`ledger:     ${lp}  (${ledExists ? "exists" : "not created yet"}`
+    + (allocated !== null ? `, ${allocated} names allocated` : "") + ")");
+  if (disabled) console.log("note:       NAMED_SUBAGENTS_HOOK_DISABLE is set — hook is a no-op in this env");
+  return 0;
+}
+
+function cmdHook(opts) {
+  const sub = opts._pos[0];
+  const handlers = {
+    run: cmdHookRun, install: cmdHookInstall, uninstall: cmdHookUninstall, status: cmdHookStatus,
+  };
+  if (!sub || !(sub in handlers)) {
+    die(sub
+      ? `argument hook: invalid choice: '${sub}' (choose from 'run', 'install', 'uninstall', 'status')`
+      : "hook: a subcommand is required (run|install|uninstall|status)");
+  }
+  return handlers[sub](opts);
+}
+
+// --------------------------------------------------------------------------- //
 const HANDLERS = {
   categories: cmdCategories,
   resolve: cmdResolve,
@@ -586,10 +857,16 @@ const HANDLERS = {
   stats: cmdStats,
   doctor: cmdDoctor,
   bio: cmdBio,
+  hook: cmdHook,
 };
 
 function main() {
-  const { cmd, opts } = parseArgs(process.argv.slice(2));
+  const raw = process.argv.slice(2);
+  // FAIL-OPEN fast path: `hook run` must NEVER exit non-zero on ANY argv. parseArgs
+  // die()s (process.exit(2)) on a trailing valueless flag, and exit 2 would BLOCK the
+  // dispatch — the one thing the contract forbids. Route it straight to the handler.
+  if (raw[0] === "hook" && raw[1] === "run") return cmdHookRun();
+  const { cmd, opts } = parseArgs(raw);
   if (opts.version) {
     console.log(`named-subagents ${VERSION}`);
     return 0;

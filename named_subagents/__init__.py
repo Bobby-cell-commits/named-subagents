@@ -33,6 +33,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 try:
@@ -40,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None  # type: ignore[assignment]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")
@@ -629,7 +630,7 @@ class Ledger:
             raise
 
     @contextlib.contextmanager
-    def lock(self):
+    def lock(self, timeout=None):
         """Hold an exclusive cross-process lock around a load->allocate->save
         critical section, closing the single-writer race (SECURITY.md). Opt-in::
 
@@ -637,6 +638,12 @@ class Ledger:
             with led.lock():        # blocks for the lock, then reloads fresh state
                 names = allocate("explore", 3, reg, ledger=led)
                 led.save()
+
+        ``timeout`` (seconds) bounds the wait: acquisition is retried non-blocking
+        and a ``TimeoutError`` is raised if it isn't held within the deadline, so a
+        wedged (e.g. SIGSTOPed) holder can't hang a caller indefinitely — the
+        auto-namer hook passes a timeout so a stuck peer degrades to fail-open
+        rather than a hung dispatch. Default (``None``) blocks, as before.
 
         In-memory ledgers (path=None) and platforms without ``fcntl`` (Windows)
         yield without a real lock -- serialize your own writers there.
@@ -646,7 +653,19 @@ class Ledger:
             return
         fd = os.open(self.path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if timeout is None:
+                fcntl.flock(fd, fcntl.LOCK_EX)             # blocking (unchanged default)
+            else:
+                deadline = time.monotonic() + timeout
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"ledger lock not acquired within {timeout}s")
+                        time.sleep(0.01)
             self._load()  # freshest state now that we hold the lock
             yield self
         finally:

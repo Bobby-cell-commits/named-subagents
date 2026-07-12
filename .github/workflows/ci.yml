@@ -22,6 +22,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Unit tests
         run: python test_named_subagents.py
+      - name: Auto-namer hook tests
+        run: python test_hook.py
       - name: Resolution accuracy eval
         run: python eval_resolution.py
       - name: Demo smoke
@@ -32,6 +34,12 @@ jobs:
           named-subagents --version
           named-subagents allocate --category explore --count 3
           python -c "import named_subagents, os; d = os.path.dirname(named_subagents.__file__); r = named_subagents.Registry.load(); assert r.total_names() >= 395, r.total_names(); assert os.path.exists(os.path.join(d, 'py.typed')), 'py.typed missing from installed wheel'; print('registry + py.typed OK from installed package')"
+      - name: Hook works from the installed package (the exact registered invocation)
+        run: |
+          printf '%s' '{"tool_name":"Agent","tool_input":{"description":"map auth","prompt":"do it","subagent_type":"Explore"}}' \
+            | NAMED_SUBAGENTS_LEDGER="$RUNNER_TEMP/hook-ledger.json" python -m named_subagents hook run \
+            | python -c "import sys, json; ui = json.load(sys.stdin)['hookSpecificOutput']['updatedInput']; assert ui['description'].endswith('map auth'), ui; assert 'parallel agents in this run.' in ui['prompt']; print('python -m named_subagents hook run OK from installed wheel')"
+          named-subagents hook status --settings "$RUNNER_TEMP/probe-settings.json"
       - name: Doctor
         run: named-subagents doctor
 
@@ -48,6 +56,8 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Unit tests
         run: node js/test_named_subagents.mjs
+      - name: Auto-namer hook tests
+        run: node js/test_hook.mjs
       - name: Demo smoke
         run: node js/demo.mjs > /dev/null
       - name: Pack smoke (prepack copies canonical registry)

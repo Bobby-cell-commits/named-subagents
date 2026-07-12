@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import named_subagents as ns
 from named_subagents import (
@@ -35,6 +36,7 @@ from named_subagents import (
     ledger_record_issue,
     ledger_stats,
     load_with_config,
+    persona_preamble,
     plan_fanout,
     resolve_category,
     to_labels,
@@ -421,6 +423,273 @@ def cmd_doctor(args):
 
 
 # --------------------------------------------------------------------------- #
+# Auto-namer hook — install once; nickname every subagent dispatch
+# (feasibility validated 2026-07-12: a PreToolUse hook on the `Agent` tool can
+#  rewrite the dispatch's `description`/`prompt` via hookSpecificOutput.updatedInput.)
+# --------------------------------------------------------------------------- #
+_HOOK_MARKER = "named-subagents-autonamer"        # sentinel in the registered command
+_PERSONA_SIG = "parallel agents in this run."     # idempotency probe (from persona_preamble)
+_DISPATCH_TOOLS = ("Agent", "Task")               # Task -> Agent rename (CC 2.1.63; alias kept)
+
+
+def _hook_ledger_path() -> str:
+    """Where the non-repeat ledger lives. NAMED_SUBAGENTS_LEDGER overrides; default
+    is a per-user state file so names never repeat across sessions/projects."""
+    env = os.environ.get("NAMED_SUBAGENTS_LEDGER")
+    if env:
+        return env
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "named-subagents", "hook-ledger.json")
+
+
+def _hook_registry():
+    """Load the registry for the hook. Never auto-loads ./.named-subagents.json:
+    the hook runs in arbitrary (possibly cloned/untrusted) project dirs and its
+    output lands inside agent prompts, so the one untrusted-input surface stays
+    off (allow_cwd=False) regardless of environment."""
+    return load_with_config(None, None, allow_cwd=False)
+
+
+def _hook_mutate(event):
+    """Map a PreToolUse event dict -> the hookSpecificOutput dict to emit, or None
+    to pass the dispatch through unchanged. May raise on internal error; the caller
+    (cmd_hook_run) fails open so a raise never breaks a dispatch."""
+    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
+        return None
+    if not isinstance(event, dict) or event.get("tool_name") not in _DISPATCH_TOOLS:
+        return None
+    ti = event.get("tool_input")
+    if not isinstance(ti, dict):
+        return None
+
+    def _str(v) -> str:
+        return v if isinstance(v, str) else ""
+
+    prompt = _str(ti.get("prompt"))
+    description = _str(ti.get("description"))
+    subagent_type = _str(ti.get("subagent_type"))
+
+    reg, _cfg = _hook_registry()
+    # Idempotency: skip an already-named dispatch (a re-fire, or a caller that ran
+    # `assign` first). Two signals so an empty-prompt dispatch can't double-prefix:
+    # the persona preamble in the prompt, OR a description already led by one of our
+    # category emojis.
+    if _PERSONA_SIG in prompt:
+        return None
+    # Fall back to a description-emoji probe ONLY when there's no prompt (a rare
+    # empty-prompt re-fire). A prompted dispatch is governed by the SIG above, so a
+    # legit description like "📊 Q3 chart" isn't wrongly treated as already-named.
+    if not prompt and description and any(
+            description.startswith(reg.emoji(c)) for c in reg.categories):
+        return None
+
+    cat = resolve_category(reg, role=subagent_type or None, task=description or None)
+
+    led = Ledger(_hook_ledger_path())
+    if led.path:
+        os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
+    with led.lock(timeout=10):             # flock (bounded): concurrent fan-out can't
+        nickname = allocate(cat, 1, reg, ledger=led)[0]   # collide; a wedged peer
+        led.save()                                        # degrades to fail-open, not a hang
+
+    emoji, theme = reg.emoji(cat), reg.theme(cat)
+    bio = reg.bio(cat, _strip_gen(nickname)) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
+    updated = dict(ti)
+    updated["description"] = (f"{emoji} {nickname}: {description}".strip()
+                              if description else f"{emoji} {nickname}")
+    if prompt:
+        updated["prompt"] = persona_preamble(nickname, theme, bio=bio) + prompt
+    return {"hookEventName": "PreToolUse", "updatedInput": updated}
+
+
+def cmd_hook_run(args=None):
+    """PreToolUse handler invoked by Claude Code. Reads the event JSON on stdin,
+    writes a hookSpecificOutput JSON on stdout, always exits 0.
+
+    FAIL-OPEN is the whole contract: any error is swallowed and nothing is written,
+    so the dispatch proceeds with its ORIGINAL input. A broken namer must never
+    break a fan-out, and it must never exit 2 (that would BLOCK the dispatch)."""
+    try:
+        event = json.loads(sys.stdin.read())
+        out = _hook_mutate(event)
+        if out is not None:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 — fail-open by design
+        pass
+    return 0
+
+
+# ---- settings.json management (install / uninstall / status) --------------- #
+def _settings_path(args) -> str:
+    if getattr(args, "settings", None):
+        return args.settings
+    if getattr(args, "project", None):
+        return os.path.join(args.project, ".claude", "settings.json")
+    return os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+
+
+def _hook_command() -> str:
+    """The command Claude Code runs per dispatch. Absolute interpreter + `-m` module
+    form (robust against the console script not being on the hook's PATH). The
+    `--managed-by` marker is a real (ignored) CLI arg — NOT a shell comment — so
+    status/uninstall can identify our entry whether or not the command is shell-parsed."""
+    return f'"{sys.executable}" -m named_subagents hook run --managed-by {_HOOK_MARKER}'
+
+
+def _read_settings(sp):
+    """(-> data_dict, error_str_or_None). `data` is always a dict ({} when the file
+    is absent OR unreadable); `error` is set when the file exists but can't be safely
+    parsed, so callers refuse to clobber it. Keeping `data` a dict (never None) means
+    no downstream None-handling."""
+    if not os.path.exists(sp):
+        return {}, None
+    try:
+        with open(sp, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (ValueError, OSError) as e:
+        return {}, str(e)
+    if not isinstance(data, dict):
+        return {}, "top-level JSON is not an object"
+    return data, None
+
+
+def _write_settings(sp, data, backup=False):
+    d = os.path.dirname(os.path.abspath(sp)) or "."
+    os.makedirs(d, exist_ok=True)
+    if backup and os.path.exists(sp):
+        shutil.copy2(sp, sp + ".bak")
+    # mkstemp opens O_EXCL with a unique name, so a pre-planted `<settings>.tmp`
+    # symlink can't redirect the write (same discipline as Ledger.save()).
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(sp) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        os.replace(tmp, sp)   # atomic
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _iter_our_hooks(pre):
+    """Yield (matcher_block, hook_entry) for every hook we own (marker match)."""
+    for m in pre if isinstance(pre, list) else []:
+        if not isinstance(m, dict):
+            continue
+        for h in m.get("hooks") or []:
+            if isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or ""):
+                yield m, h
+
+
+def cmd_hook_install(args):
+    sp = _settings_path(args)
+    data, err = _read_settings(sp)
+    if err:
+        print(f"error: {sp} is not valid settings JSON ({err}); refusing to modify it.\n"
+              f"Fix or remove that file, then re-run `named-subagents hook install`.",
+              file=sys.stderr)
+        return 1
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        print(f"error: {sp} has a non-object 'hooks'; refusing to modify.", file=sys.stderr)
+        return 1
+    pre = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre, list):
+        print(f"error: {sp} has a non-list 'hooks.PreToolUse'; refusing to modify.", file=sys.stderr)
+        return 1
+    existed = os.path.exists(sp)
+    cmd = _hook_command()
+    for _m, h in _iter_our_hooks(pre):
+        h["command"] = cmd              # refresh (e.g. new interpreter path); idempotent
+        _write_settings(sp, data, backup=existed)
+        print(f"auto-namer hook already installed — refreshed the command in {sp}")
+        return 0
+    pre.append({"matcher": "Agent|Task",
+                "hooks": [{"type": "command", "command": cmd}]})
+    _write_settings(sp, data, backup=existed)
+    print(f"installed the auto-namer hook in {sp}\n"
+          f"  matcher: Agent|Task\n  command: {cmd}\n"
+          f"New Claude Code sessions will nickname every subagent dispatch.\n"
+          f"Verify with `named-subagents hook status`.")
+    return 0
+
+
+def cmd_hook_uninstall(args):
+    sp = _settings_path(args)
+    if not os.path.exists(sp):
+        print(f"nothing to remove: {sp} does not exist")
+        return 0
+    data, err = _read_settings(sp)
+    if err:
+        print(f"error: {sp} is not valid JSON ({err}); refusing to modify.", file=sys.stderr)
+        return 1
+    pre = (data.get("hooks") or {}).get("PreToolUse")
+    if not isinstance(pre, list):
+        print(f"no auto-namer hook found in {sp}")
+        return 0
+    removed, new_pre = 0, []
+    for m in pre:
+        if not isinstance(m, dict) or not isinstance(m.get("hooks"), list):
+            new_pre.append(m)           # not a hooks block -> leave it exactly as-is
+            continue
+        hs = m["hooks"]
+        kept = [h for h in hs
+                if not (isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or ""))]
+        if len(kept) == len(hs):
+            new_pre.append(m)           # nothing of ours here -> untouched
+            continue
+        removed += len(hs) - len(kept)
+        if kept:
+            new_pre.append({**m, "hooks": kept})   # keep the block with its survivors
+        # else: the block held ONLY our hook(s) -> drop the now-empty matcher block
+    if removed:
+        data["hooks"]["PreToolUse"] = new_pre
+        _write_settings(sp, data, backup=True)
+        print(f"removed the auto-namer hook from {sp}")
+    else:
+        print(f"no auto-namer hook found in {sp}")
+    return 0
+
+
+def cmd_hook_status(args):
+    sp = _settings_path(args)
+    data, err = _read_settings(sp)
+    installed, cmd = False, None
+    for _m, h in _iter_our_hooks((data.get("hooks") or {}).get("PreToolUse") or []):
+        installed, cmd = True, h.get("command")
+    lp = _hook_ledger_path()
+    led_exists = os.path.exists(lp)
+    allocated = None
+    if led_exists:
+        try:
+            reg, _ = _hook_registry()
+            allocated = ledger_stats(reg, Ledger(lp))["totals"]["total_allocated"]
+        except Exception:  # noqa: BLE001 — status must never crash
+            allocated = None
+    disabled = bool(os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"))
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "settings_path": sp, "settings_malformed": bool(err),
+            "installed": installed, "command": cmd, "ledger_path": lp,
+            "ledger_exists": led_exists, "total_allocated": allocated,
+            "disabled": disabled,
+        }, ensure_ascii=False, indent=2))
+        return 0
+    print(f"settings:   {sp}" + ("  ⚠ MALFORMED JSON" if err else ""))
+    print(f"installed:  {'yes' if installed else 'no'}")
+    if cmd:
+        print(f"  command:  {cmd}")
+    print(f"ledger:     {lp}  ({'exists' if led_exists else 'not created yet'}"
+          + (f", {allocated} names allocated" if allocated is not None else "") + ")")
+    if disabled:
+        print("note:       NAMED_SUBAGENTS_HOOK_DISABLE is set — hook is a no-op in this env")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="named-subagents", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -520,11 +789,48 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_flags(sb)
     sb.set_defaults(func=cmd_bio)
 
+    sh = sub.add_parser("hook",
+                        help="auto-namer: install once, nickname every subagent dispatch")
+    hsub = sh.add_subparsers(dest="hook_cmd", required=True)
+
+    hr = hsub.add_parser("run",
+                         help="(invoked by Claude Code) name a dispatch from a PreToolUse event on stdin")
+    # Ignored marker so `hook status`/`uninstall` can identify the registered command
+    # (a real CLI arg, robust to shell-vs-exec, unlike a `# comment`).
+    hr.add_argument("--managed-by", help=argparse.SUPPRESS, default=None)
+    hr.set_defaults(func=cmd_hook_run)
+
+    def _hook_target_flags(sp_):
+        sp_.add_argument("--settings",
+                         help="settings.json path (default: ~/.claude/settings.json)")
+        sp_.add_argument("--project",
+                         help="target <DIR>/.claude/settings.json instead of the global settings")
+
+    hi = hsub.add_parser("install", help="register the hook in Claude Code settings.json")
+    _hook_target_flags(hi)
+    hi.set_defaults(func=cmd_hook_install)
+
+    hu = hsub.add_parser("uninstall", help="remove the hook from settings.json")
+    _hook_target_flags(hu)
+    hu.set_defaults(func=cmd_hook_uninstall)
+
+    hstat = hsub.add_parser("status", help="show whether the hook is installed + ledger stats")
+    _hook_target_flags(hstat)
+    hstat.add_argument("--json", action="store_true")
+    hstat.set_defaults(func=cmd_hook_status)
+
     return p
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    # FAIL-OPEN fast path: `hook run` must NEVER exit non-zero on ANY argv — argparse
+    # is strict and sys.exit(2)s on an unexpected token, and exit 2 would BLOCK the
+    # dispatch (the one thing the contract forbids). Route it straight to the handler,
+    # bypassing argparse, so extra/unknown args can never turn into a blocking exit.
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    if argv_list[:2] == ["hook", "run"]:
+        return cmd_hook_run(None)
+    args = build_parser().parse_args(argv_list)
     try:
         return args.func(args)
     except (OSError, ValueError) as e:

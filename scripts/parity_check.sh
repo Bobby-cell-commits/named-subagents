@@ -70,4 +70,12 @@ if norm(py) != norm(js):
 EOF
 echo "  [PASS] assign payloads identical (incl. preamble text)"
 
+# 7 — auto-namer hook: identical mutation for an identical PreToolUse event over a
+#     fresh ledger (the nickname + preamble land in agent prompts, so byte-parity matters)
+HEV='{"tool_name":"Agent","tool_input":{"description":"map the auth module","prompt":"Find the login handler.","subagent_type":"Explore"}}'
+printf '%s' "$HEV" | NAMED_SUBAGENTS_LEDGER="$TMP/hook-py.json" $PY hook run > "$TMP/py-hook.json"
+printf '%s' "$HEV" | NAMED_SUBAGENTS_LEDGER="$TMP/hook-js.json" $JS hook run > "$TMP/js-hook.json"
+diff -u "$TMP/py-hook.json" "$TMP/js-hook.json" > /dev/null || fail "hook run mutation differs"
+echo "  [PASS] hook run mutation identical (nickname + description + preamble)"
+
 echo "PARITY OK"
