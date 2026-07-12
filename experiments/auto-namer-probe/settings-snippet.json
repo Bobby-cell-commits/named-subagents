@@ -1,0 +1,16 @@
+{
+  "//": "Copy the PreToolUse block into a PROJECT-LOCAL .claude/settings.json (a throwaway repo is ideal). Replace /ABS/PATH with this file's real absolute directory — Claude Code hooks require absolute paths. matcher '.*' logs EVERY tool call so the fan-out reveals the dispatch tool name; narrow it to that name (e.g. 'Task') for Step 2. Set NS_PROBE_MUTATE=1 in your environment before launching Claude Code to test label rewriting. See FEASIBILITY.md.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /ABS/PATH/experiments/auto-namer-probe/probe-hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

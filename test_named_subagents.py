@@ -490,6 +490,69 @@ except PoolExhaustedError:
     check("avoid participates in the exhaustion check", True)
 
 # --------------------------------------------------------------------------- #
+section("Attribution: attribute() verifies/repairs the [Nickname] prefix")
+check("correct tag -> unchanged (idempotent)",
+      ns.attribute("Magellan", "[Magellan]\nbody") == "[Magellan]\nbody")
+check("wrong/other bracket tag -> replaced",
+      ns.attribute("Magellan", "[Cook]\nbody") == "[Magellan]\nbody")
+check("no tag -> prepended",
+      ns.attribute("Magellan", "body") == "[Magellan]\nbody")
+check("empty report -> bare tag", ns.attribute("Magellan", "") == "[Magellan]")
+check("whitespace-only report -> bare tag", ns.attribute("Magellan", "   \n  ") == "[Magellan]")
+check("leading blank lines -> prepend to original",
+      ns.attribute("Magellan", "\n\nbody") == "[Magellan]\n\n\nbody")
+check("generation-suffixed nickname",
+      ns.attribute("Magellan·2", "body") == "[Magellan·2]\nbody")
+check("bracketed but not tag-only first line -> prepend (not clobbered)",
+      ns.attribute("Magellan", "[INFO] x\ny") == "[Magellan]\n[INFO] x\ny")
+check("idempotent on a repaired report",
+      ns.attribute("Magellan", ns.attribute("Magellan", "[Cook]\nbody")) == "[Magellan]\nbody")
+
+# --------------------------------------------------------------------------- #
+section("Resolution evidence: keyword_matches() (backs resolve --explain)")
+_reg_km = ns.Registry.load()
+check("keyword_matches finds security 'audit'",
+      "audit" in _reg_km.keyword_matches("audit the auth flow for vulnerabilities").get("security", []))
+check("keyword_matches empty for a keyword-free task",
+      _reg_km.keyword_matches("hey what is up") == {})
+
+# --------------------------------------------------------------------------- #
+section("Sessions + locking: session() auto-recycles, lock() serializes")
+with tempfile.TemporaryDirectory() as d:
+    reg = ns.Registry.load()
+    lp = os.path.join(d, "ledger.json")
+    led = ns.Ledger(lp)
+    with led.session():
+        drawn = ns.allocate("explore", 3, reg, ledger=led)
+    check("session drew 3 names", len(drawn) == 3)
+    check("session released the drawn names on exit", led.used("explore") == [])
+    with led.session():
+        redraw = ns.allocate("explore", 3, reg, ledger=led)
+    check("recycled names are redrawable", redraw == drawn)
+    keep = ns.allocate("explore", 2, reg, ledger=led)  # persisted (no session)
+    with led.session():
+        inblock = ns.allocate("explore", 2, reg, ledger=led)
+    used_now = set(led.used("explore"))
+    check("pre-session names kept", set(ns._strip_gen(n) for n in keep) <= used_now)
+    check("in-session names released", not (set(ns._strip_gen(n) for n in inblock) & used_now))
+    # lock(): reload-under-lock picks up a concurrent external write
+    lp2 = os.path.join(d, "ledger2.json")
+    with open(lp2, "w") as fh:
+        json.dump({"_v": 2}, fh)
+    led3 = ns.Ledger(lp2)
+    with open(lp2, "w") as fh:  # simulate another process writing between load + lock
+        json.dump({"_v": 2, "explore": {"used": ["Beacon"], "generation": 1,
+                                         "retired": [], "total_allocated": 1}}, fh)
+    check("in-memory state stale before lock", led3.used("explore") == [])
+    with led3.lock():
+        check("lock() reloaded the concurrent write", led3.used("explore") == ["Beacon"])
+        n = ns.allocate("reflect", 1, reg, ledger=led3)
+        led3.save()
+    check("lock() critical section persisted", ns.Ledger(lp2).used("reflect") == [ns._strip_gen(n[0])])
+    with ns.Ledger(None).lock():
+        check("lock() on an in-memory ledger is a no-op", True)
+
+# --------------------------------------------------------------------------- #
 section("Config (D5): search order")
 with tempfile.TemporaryDirectory() as d:
     explicit_p = os.path.join(d, "explicit.json")
@@ -508,12 +571,25 @@ with tempfile.TemporaryDirectory() as d:
     try:
         os.environ[ns.CONFIG_ENV_VAR] = env_p
         os.chdir(cwd_dir)
-        check("explicit path beats env + cwd", load_config(explicit_p)["marker"] == "explicit")
-        check("env beats cwd", load_config()["marker"] == "env")
+        # explicit path + env are trusted (deliberate) -> always considered.
+        check("explicit path beats env + cwd", load_config(explicit_p, allow_cwd=True)["marker"] == "explicit")
+        check("env beats cwd (cwd opted in)", load_config(allow_cwd=True)["marker"] == "env")
         check("pins surface via load_config",
               load_config(explicit_p).get("pins") == {"security": "Argus"})
         del os.environ[ns.CONFIG_ENV_VAR]
-        check("cwd .named-subagents.json found", load_config()["marker"] == "cwd")
+        # 0.3: the cwd .named-subagents.json is the one untrusted surface -> OPT-IN.
+        check("cwd config ignored by default (opt-in)", load_config() == {})
+        check("cwd config loaded when allow_cwd=True", load_config(allow_cwd=True)["marker"] == "cwd")
+        os.environ[ns.CWD_CONFIG_ENV_VAR] = "1"
+        check("cwd config loaded via CWD_CONFIG env", load_config()["marker"] == "cwd")
+        check("allow_cwd=False overrides CWD_CONFIG env", load_config(allow_cwd=False) == {})
+        os.environ[ns.NO_CWD_CONFIG_ENV_VAR] = "1"
+        check("NO_CWD_CONFIG env wins over CWD_CONFIG env", load_config() == {})
+        del os.environ[ns.NO_CWD_CONFIG_ENV_VAR]
+        del os.environ[ns.CWD_CONFIG_ENV_VAR]
+        check("cwd_config_enabled() default False", ns.cwd_config_enabled() is False)
+        check("cwd_config_enabled(True) is True", ns.cwd_config_enabled(True) is True)
+        check("cwd_config_enabled(False) is False", ns.cwd_config_enabled(False) is False)
         os.chdir(empty_dir)
         home_cfg = os.path.join(os.path.expanduser("~"), ".config",
                                 "named-subagents", "config.json")
@@ -523,6 +599,8 @@ with tempfile.TemporaryDirectory() as d:
             print("      (missing-config check skipped: real home config present)")
     finally:
         os.chdir(old_cwd)
+        os.environ.pop(ns.CWD_CONFIG_ENV_VAR, None)
+        os.environ.pop(ns.NO_CWD_CONFIG_ENV_VAR, None)
         if old_env is not None:
             os.environ[ns.CONFIG_ENV_VAR] = old_env
 
@@ -755,7 +833,7 @@ def run_cli(*argv, env_extra=None):
 
 r = run_cli("--version")
 check("--version exits 0", r.returncode == 0, r.stderr)
-check("--version prints the version", "0.2.0" in r.stdout, r.stdout)
+check("--version prints the version", ns.__version__ in r.stdout, r.stdout)
 
 with tempfile.TemporaryDirectory() as d:
     lp = os.path.join(d, "cli-ledger.json")

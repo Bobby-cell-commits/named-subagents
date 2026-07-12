@@ -26,6 +26,7 @@ Two layers, mirroring Codex:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -34,13 +35,22 @@ import stat
 import tempfile
 from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
 
-__version__ = "0.2.0"
+try:
+    import fcntl  # POSIX advisory file locks; absent on Windows
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None  # type: ignore[assignment]
+
+__version__ = "0.3.0"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")
 GEN_SEP = "·"  # middle dot, e.g. "Magellan·2" on the 2nd cycle of the pool
 
 CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CONFIG"
+# The implicit ./.named-subagents.json cwd config is the one untrusted-input
+# surface (SECURITY.md). As of 0.3 it is OPT-IN: off unless enabled below.
+NO_CWD_CONFIG_ENV_VAR = "NAMED_SUBAGENTS_NO_CWD_CONFIG"  # force off (also `--no-cwd-config`)
+CWD_CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CWD_CONFIG"  # opt back in (also `--cwd-config`)
 LEDGER_VERSION = 2
 
 # Registry / config files are semi-trusted local paths; a non-regular file
@@ -196,23 +206,62 @@ def _valid_name(name: object) -> bool:
 # --------------------------------------------------------------------------- #
 # Config (D5)
 # --------------------------------------------------------------------------- #
-def load_config(path: Optional[str] = None) -> dict:
+def _env_truthy(name: str) -> bool:
+    """A conventional 1/true/yes/on env flag (empty / 0 / false / no / off -> False)."""
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def cwd_config_enabled(cli_override: Optional[bool] = None) -> bool:
+    """Whether the implicit ./.named-subagents.json cwd config is auto-loaded.
+
+    It is the one *untrusted-input* surface (a project you cloned controls it),
+    so as of 0.3 it is OPT-IN. Precedence (first decisive wins):
+
+    1. explicit CLI flag — ``--cwd-config`` (True) / ``--no-cwd-config`` (False),
+       passed here as ``cli_override``
+    2. env — ``NAMED_SUBAGENTS_NO_CWD_CONFIG`` (off) beats
+       ``NAMED_SUBAGENTS_CWD_CONFIG`` (on)
+    3. default — **off**
+
+    An explicit ``--config PATH``, ``$NAMED_SUBAGENTS_CONFIG``, and the home
+    config (``~/.config/named-subagents/config.json``) are unaffected — they are
+    deliberately pointed-at or user-owned, hence trusted.
+    """
+    if cli_override is not None:
+        return cli_override
+    if _env_truthy(NO_CWD_CONFIG_ENV_VAR):
+        return False
+    if _env_truthy(CWD_CONFIG_ENV_VAR):
+        return True
+    return False
+
+
+def load_config(path: Optional[str] = None, allow_cwd: Optional[bool] = None) -> dict:
     """Load the user config. Search order (first existing wins):
 
     1. explicit `path`
     2. $NAMED_SUBAGENTS_CONFIG
-    3. ./.named-subagents.json
+    3. ./.named-subagents.json  — only when `allow_cwd` (see below); OFF by default
     4. ~/.config/named-subagents/config.json
+
+    `allow_cwd`: include the cwd candidate? None -> resolve from env/default via
+    `cwd_config_enabled()`; True/False force it. The cwd file is untrusted input
+    (SECURITY.md), so it is opt-in as of 0.3.
 
     No candidate exists -> {}. A found-but-invalid config fails loudly
     (never silently dropped).
     """
+    if allow_cwd is None:
+        allow_cwd = cwd_config_enabled()
     candidates = [
         path,
         os.environ.get(CONFIG_ENV_VAR),
-        os.path.join(".", ".named-subagents.json"),
-        os.path.join(os.path.expanduser("~"), ".config", "named-subagents", "config.json"),
     ]
+    if allow_cwd:
+        candidates.append(os.path.join(".", ".named-subagents.json"))
+    candidates.append(
+        os.path.join(os.path.expanduser("~"), ".config", "named-subagents", "config.json")
+    )
     for cand in candidates:
         if cand and os.path.isfile(cand):
             with open(cand, "r", encoding="utf-8") as fh:
@@ -374,16 +423,29 @@ class Registry:
                 return cat
         return None
 
+    def keyword_matches(self, task: str) -> Dict[str, List[str]]:
+        """Per-category list of the keywords that appear as substrings in `task`
+        (case-insensitive) — the evidence behind resolve() / ``resolve --explain``."""
+        t = task.lower()
+        out: Dict[str, List[str]] = {}
+        for cat, spec in self.categories.items():
+            hit = [kw for kw in spec.get("keywords", []) if kw in t]
+            if hit:
+                out[cat] = hit
+        return out
+
 
 def load_with_config(
     registry_path: Optional[str] = None,
     config_path: Optional[str] = None,
+    allow_cwd: Optional[bool] = None,
 ) -> Tuple[Registry, dict]:
     """load_config + Registry.load in one call.
 
+    `allow_cwd` is threaded to `load_config` (cwd config opt-in; see there).
     Returns (registry, config) — the config is returned too because it may
     carry runtime-only keys the Registry doesn't store (e.g. "pins")."""
-    config = load_config(config_path)
+    config = load_config(config_path, allow_cwd=allow_cwd)
     return Registry.load(registry_path, config=config), config
 
 
@@ -431,17 +493,25 @@ class Ledger:
     def __init__(self, path: Optional[str] = None):
         self.path = path
         self.state: Dict[str, object] = {}
-        if path and os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    # parse_constant rejects NaN/Infinity so Python matches JS's
-                    # standard JSON.parse (which refuses them) -> a NaN-laced
-                    # ledger reads as corrupt->fresh in BOTH ports, not divergent.
-                    loaded = json.load(fh, parse_constant=_reject_constant)
-                if isinstance(loaded, dict):
-                    self.state = loaded
-            except (ValueError, OSError):
-                self.state = {}  # corrupt/unreadable -> fresh, never crash
+        self._load()
+
+    def _load(self) -> None:
+        """(Re)read state from disk; corrupt/unreadable/missing -> empty (never
+        crashes). Called at construction, and again inside lock() so a critical
+        section reads a concurrent writer's changes before it allocates.
+
+        parse_constant rejects NaN/Infinity so Python matches JS's standard
+        JSON.parse -> a NaN-laced ledger reads as corrupt->fresh in BOTH ports.
+        """
+        if not (self.path and os.path.exists(self.path)):
+            self.state = {}
+            return
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh, parse_constant=_reject_constant)
+            self.state = loaded if isinstance(loaded, dict) else {}
+        except (ValueError, OSError):
+            self.state = {}  # corrupt/unreadable -> fresh, never crash
 
     # --- internal ----------------------------------------------------------- #
     def _rec(self, category: str) -> dict:
@@ -557,6 +627,56 @@ class Ledger:
             except OSError:
                 pass
             raise
+
+    @contextlib.contextmanager
+    def lock(self):
+        """Hold an exclusive cross-process lock around a load->allocate->save
+        critical section, closing the single-writer race (SECURITY.md). Opt-in::
+
+            led = Ledger(path)
+            with led.lock():        # blocks for the lock, then reloads fresh state
+                names = allocate("explore", 3, reg, ledger=led)
+                led.save()
+
+        In-memory ledgers (path=None) and platforms without ``fcntl`` (Windows)
+        yield without a real lock -- serialize your own writers there.
+        """
+        if not self.path or fcntl is None:
+            yield self
+            return
+        fd = os.open(self.path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._load()  # freshest state now that we hold the lock
+            yield self
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    @contextlib.contextmanager
+    def session(self):
+        """Draw names inside the block; auto-release them on exit so short-lived
+        names recycle without manual ``release()`` calls::
+
+            with led.session():
+                names = allocate("explore", 3, reg, ledger=led)
+                ...                       # use names
+            # the 3 base names are back in the pool
+
+        Best-effort: releases the base names newly added to each category's
+        ``used`` during the block (sorted, so both ports match). A draw that
+        crossed a generation boundary may not fully recycle, since ``release()``
+        targets the current generation.
+        """
+        before = {c: set(self.used(c)) for c in self.state if c != "_v"}
+        try:
+            yield self
+        finally:
+            for c in [c for c in self.state if c != "_v"]:
+                for name in sorted(set(self.used(c)) - before.get(c, set())):
+                    self.release(c, name)
 
 
 # --------------------------------------------------------------------------- #
@@ -801,6 +921,38 @@ def persona_preamble(nickname: str, theme: str, bio: Optional[str] = None) -> st
         f"{bio_line}"
         f"--- YOUR TASK ---\n"
     )
+
+
+_ATTR_TAG_RE = re.compile(r"^\s*\[[^\]]*\]\s*$")
+
+
+def attribute(nickname: str, report: str) -> str:
+    """Ensure `report` begins with the attribution line ``[nickname]``.
+
+    The persona preamble only *asks* an agent to self-tag; this verifies/repairs
+    the prefix for the text-parsing path. Attribution does **not** depend on it —
+    the nickname is in the dispatch metadata (the display label) regardless of
+    whether the agent complied; use this only when you have raw report text.
+
+    - first non-blank line is already ``[nickname]`` -> returned unchanged
+    - first non-blank line is a *different* bracket-only tag -> replaced
+    - no leading bracket-only tag -> ``[nickname]`` is prepended
+
+    Idempotent: ``attribute(n, attribute(n, r)) == attribute(n, r)``.
+    """
+    tag = "[%s]" % nickname
+    if not report or not report.strip():
+        return tag
+    lines = report.split("\n")
+    i = 0
+    while i < len(lines) and lines[i].strip() == "":
+        i += 1
+    if lines[i].strip() == tag:
+        return report
+    if _ATTR_TAG_RE.match(lines[i]):
+        lines[i] = tag
+        return "\n".join(lines)
+    return tag + "\n" + report
 
 
 class Assignment(NamedTuple):

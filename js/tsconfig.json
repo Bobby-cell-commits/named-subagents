@@ -1,0 +1,19 @@
+{
+  "//": "Type-check-only config. Validates named_subagents.d.ts by having a consumer (types_test.ts) exercise the public surface. `tsc -p tsconfig.json` (via npx; no deps are installed). Never emits.",
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": false,
+    "exactOptionalPropertyTypes": false,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "baseUrl": ".",
+    "paths": {
+      "named-subagents": ["./named_subagents"]
+    },
+    "types": [],
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["types_test.ts", "named_subagents.d.ts"]
+}

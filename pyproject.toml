@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "named-subagents"
-version = "0.2.0"
+version = "0.3.0"
 description = "Themed, non-repeating nicknames for Claude Code subagents — a userspace port of Codex's nickname_candidates"
 readme = "README.md"
 license = {text = "MIT"}
@@ -48,6 +48,7 @@ named-subagents = "named_subagents.cli:main"
 packages = ["named_subagents"]
 
 # Explicit table — the implicit include-package-data default can silently drop
-# a JSON data file from the wheel.
+# a JSON data file from the wheel. `py.typed` (PEP 561) makes the inline type
+# hints reach downstream type-checkers; it must be shipped in the wheel too.
 [tool.setuptools.package-data]
-named_subagents = ["registry.json"]
+named_subagents = ["registry.json", "py.typed"]

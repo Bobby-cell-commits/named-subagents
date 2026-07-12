@@ -3,6 +3,8 @@
 export const VERSION: string;
 export const GEN_SEP: string;
 export const CONFIG_ENV_VAR: string;
+export const NO_CWD_CONFIG_ENV_VAR: string;
+export const CWD_CONFIG_ENV_VAR: string;
 export const LEDGER_VERSION: number;
 export const NAME_PATTERN: string;
 export const CATEGORY_KEY_PATTERN: string;
@@ -54,18 +56,29 @@ export class Registry {
   totalNames(): number;
   bySubagentType(role: string): string | null;
   keywordScores(task: string): Record<string, number>;
+  /** Per-category keywords that substring-match `task` (evidence for --explain). */
+  keywordMatches(task: string): Record<string, string[]>;
   byKeyword(task: string): string | null;
 }
 
+/** Whether the implicit ./.named-subagents.json cwd config is auto-loaded.
+ * Opt-in as of 0.3 (the one untrusted-input surface). Precedence: explicit
+ * `cliOverride` > NAMED_SUBAGENTS_NO_CWD_CONFIG (off) > NAMED_SUBAGENTS_CWD_CONFIG
+ * (on) > default off. */
+export function cwdConfigEnabled(cliOverride?: boolean | null): boolean;
+
 /** Load the user config. Search order: explicit path > $NAMED_SUBAGENTS_CONFIG
- * > ./.named-subagents.json > ~/.config/named-subagents/config.json. */
-export function loadConfig(path?: string | null): UserConfig;
+ * > (opt-in) ./.named-subagents.json > ~/.config/named-subagents/config.json.
+ * `allowCwd` gates the cwd candidate (null -> resolve via cwdConfigEnabled()). */
+export function loadConfig(path?: string | null, allowCwd?: boolean | null): UserConfig;
 
 /** loadConfig + Registry.load in one call (config may carry runtime-only keys
- * such as "pins" that the Registry doesn't store). */
+ * such as "pins" that the Registry doesn't store). `allowCwd` is threaded to
+ * loadConfig. */
 export function loadWithConfig(
   registryPath?: string | null,
   configPath?: string | null,
+  allowCwd?: boolean | null,
 ): { registry: Registry; config: UserConfig };
 
 export interface ResolveOpts {
@@ -84,6 +97,10 @@ export interface LedgerRecord {
   [k: string]: unknown;
 }
 
+/** Human reason string if `rec` is a malformed ledger category record, else
+ * null (the doctor uses it to FAIL-report instead of crashing). */
+export function ledgerRecordIssue(rec: unknown): string | null;
+
 export class Ledger {
   path: string | null;
   state: Record<string, LedgerRecord | number>;
@@ -100,6 +117,9 @@ export class Ledger {
   unretire(category: string, name: string): boolean;
   reset(category?: string | null): void;
   save(): void;
+  /** Draw names inside `fn`, auto-release them afterward (recycle short-lived
+   * names). Returns fn's result. JS analogue of Python's `with ledger.session():`. */
+  session<T>(fn: (ledger: Ledger) => T): T;
 }
 
 export interface AllocateOpts {
@@ -137,6 +157,11 @@ export function ledgerStats(registry: Registry, ledger: Ledger): LedgerStats;
 /** When `bio` is truthy, the exact line `You are named for: {bio}\n` is
  * inserted immediately before the `--- YOUR TASK ---` line. */
 export function personaPreamble(nickname: string, theme: string, bio?: string | null): string;
+
+/** Ensure `report` begins with the attribution line `[nickname]` (verify/repair
+ * the prefix for the text-parsing path). Attribution does not depend on this —
+ * the nickname is in the dispatch metadata regardless of agent compliance. */
+export function attribute(nickname: string, report: string): string;
 
 export interface Assignment {
   nickname: string;
