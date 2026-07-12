@@ -33,13 +33,14 @@ const STATS_FLOAT_KEYS = new Set(["pct_used"]);
 // --------------------------------------------------------------------------- //
 // argv parsing (mirrors the Python argparse surface)
 // --------------------------------------------------------------------------- //
-const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version"]);
+const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config"]);
 const COMMANDS = new Set([
   "categories", "resolve", "allocate", "assign",
   "release", "retire", "unretire", "stats", "doctor", "bio",
 ]);
 const USAGE =
-  "usage: named-subagents [--registry PATH] [--config PATH] [--version] "
+  "usage: named-subagents [--registry PATH] [--config PATH] "
+  + "[--cwd-config|--no-cwd-config] [--version] "
   + "<categories|resolve|allocate|assign|release|retire|unretire|stats|doctor|bio> ...";
 
 function parseArgs(argv) {
@@ -108,7 +109,11 @@ function die(msg, code = 2) {
 // shared helpers
 // --------------------------------------------------------------------------- //
 function regCfg(opts) {
-  return loadWithConfig(opts.registry || null, opts.config || null);
+  // --no-cwd-config (false, wins) / --cwd-config (true) -> allowCwd, else null.
+  let override = null;
+  if (opts["no-cwd-config"]) override = false;
+  else if (opts["cwd-config"]) override = true;
+  return loadWithConfig(opts.registry || null, opts.config || null, override);
 }
 
 function ledgerOf(opts) {

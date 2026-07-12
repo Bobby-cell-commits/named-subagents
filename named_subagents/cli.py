@@ -48,9 +48,23 @@ _PKG_DIR = os.path.dirname(os.path.abspath(ns.__file__ or "."))
 _REPO_ROOT = os.path.dirname(_PKG_DIR)
 
 
+def _cwd_override(args):
+    """--no-cwd-config (False, wins) / --cwd-config (True) -> allow_cwd, else None."""
+    if getattr(args, "no_cwd_config", False):
+        return False
+    if getattr(args, "cwd_config", False):
+        return True
+    return None
+
+
 def _reg_cfg(args):
-    """(Registry, config) honoring --registry and --config (+ search order)."""
-    return load_with_config(getattr(args, "registry", None), getattr(args, "config", None))
+    """(Registry, config) honoring --registry, --config, and the cwd-config
+    opt-in flags (--cwd-config / --no-cwd-config; cwd config is off by default)."""
+    return load_with_config(
+        getattr(args, "registry", None),
+        getattr(args, "config", None),
+        allow_cwd=_cwd_override(args),
+    )
 
 
 def _ledger(args):
@@ -396,7 +410,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--registry", help="path to registry.json (default: bundled)")
     p.add_argument("--config",
                    help="path to a config file (default search: $NAMED_SUBAGENTS_CONFIG, "
-                        "./.named-subagents.json, ~/.config/named-subagents/config.json)")
+                        "~/.config/named-subagents/config.json; ./.named-subagents.json only "
+                        "with --cwd-config)")
+    p.add_argument("--cwd-config", dest="cwd_config", action="store_true",
+                   help="opt in to loading ./.named-subagents.json (off by default since 0.3 "
+                        "— it is the one untrusted-input surface)")
+    p.add_argument("--no-cwd-config", dest="no_cwd_config", action="store_true",
+                   help="never load ./.named-subagents.json (wins over --cwd-config and "
+                        "$NAMED_SUBAGENTS_CWD_CONFIG)")
     p.add_argument("--version", action="version", version=f"named-subagents {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -408,6 +429,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="path to registry.json (also accepted before the subcommand)")
         sp.add_argument("--config", default=argparse.SUPPRESS,
                         help="path to a config file (also accepted before the subcommand)")
+        sp.add_argument("--cwd-config", dest="cwd_config", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="opt in to ./.named-subagents.json (also accepted before the subcommand)")
+        sp.add_argument("--no-cwd-config", dest="no_cwd_config", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="never load ./.named-subagents.json (also accepted before the subcommand)")
 
     sc = sub.add_parser("categories", help="list categories + themes")
     add_common_flags(sc)

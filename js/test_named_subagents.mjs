@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   Registry, Ledger, PoolExhaustedError, GEN_SEP, CONFIG_ENV_VAR,
+  CWD_CONFIG_ENV_VAR, NO_CWD_CONFIG_ENV_VAR, cwdConfigEnabled,
   allocate, resolveCategory, planFanout, assignOne, loadConfig,
   installedAgentNames, ledgerRecordIssue, ledgerStats, personaPreamble,
   toLabels, toWorkflow, toSwarm, stripGen, pyDumps, pyRound1, formatPyFloat,
@@ -487,12 +488,25 @@ section("Config (D5): search order");
   try {
     process.env[CONFIG_ENV_VAR] = envP;
     process.chdir(cwdDir);
-    check("explicit path beats env + cwd", loadConfig(explicitP).marker === "explicit");
-    check("env beats cwd", loadConfig().marker === "env");
+    // explicit path + env are trusted (deliberate) -> always considered.
+    check("explicit path beats env + cwd", loadConfig(explicitP, true).marker === "explicit");
+    check("env beats cwd (cwd opted in)", loadConfig(null, true).marker === "env");
     check("pins surface via loadConfig",
       JSON.stringify(loadConfig(explicitP).pins) === JSON.stringify({ security: "Argus" }));
     delete process.env[CONFIG_ENV_VAR];
-    check("cwd .named-subagents.json found", loadConfig().marker === "cwd");
+    // 0.3: the cwd .named-subagents.json is the one untrusted surface -> OPT-IN.
+    check("cwd config ignored by default (opt-in)", Object.keys(loadConfig()).length === 0);
+    check("cwd config loaded when allowCwd=true", loadConfig(null, true).marker === "cwd");
+    process.env[CWD_CONFIG_ENV_VAR] = "1";
+    check("cwd config loaded via CWD_CONFIG env", loadConfig().marker === "cwd");
+    check("allowCwd=false overrides CWD_CONFIG env", Object.keys(loadConfig(null, false)).length === 0);
+    process.env[NO_CWD_CONFIG_ENV_VAR] = "1";
+    check("NO_CWD_CONFIG env wins over CWD_CONFIG env", Object.keys(loadConfig()).length === 0);
+    delete process.env[NO_CWD_CONFIG_ENV_VAR];
+    delete process.env[CWD_CONFIG_ENV_VAR];
+    check("cwdConfigEnabled() default false", cwdConfigEnabled() === false);
+    check("cwdConfigEnabled(true) is true", cwdConfigEnabled(true) === true);
+    check("cwdConfigEnabled(false) is false", cwdConfigEnabled(false) === false);
     process.chdir(emptyDir);
     const homeCfg = join(homedir(), ".config", "named-subagents", "config.json");
     if (!existsSync(homeCfg)) {
@@ -503,6 +517,8 @@ section("Config (D5): search order");
   } finally {
     process.chdir(oldCwd);
     if (oldEnv !== undefined) process.env[CONFIG_ENV_VAR] = oldEnv;
+    delete process.env[CWD_CONFIG_ENV_VAR];
+    delete process.env[NO_CWD_CONFIG_ENV_VAR];
     rmSync(d, { recursive: true, force: true });
   }
 }

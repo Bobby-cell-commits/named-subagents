@@ -508,12 +508,25 @@ with tempfile.TemporaryDirectory() as d:
     try:
         os.environ[ns.CONFIG_ENV_VAR] = env_p
         os.chdir(cwd_dir)
-        check("explicit path beats env + cwd", load_config(explicit_p)["marker"] == "explicit")
-        check("env beats cwd", load_config()["marker"] == "env")
+        # explicit path + env are trusted (deliberate) -> always considered.
+        check("explicit path beats env + cwd", load_config(explicit_p, allow_cwd=True)["marker"] == "explicit")
+        check("env beats cwd (cwd opted in)", load_config(allow_cwd=True)["marker"] == "env")
         check("pins surface via load_config",
               load_config(explicit_p).get("pins") == {"security": "Argus"})
         del os.environ[ns.CONFIG_ENV_VAR]
-        check("cwd .named-subagents.json found", load_config()["marker"] == "cwd")
+        # 0.3: the cwd .named-subagents.json is the one untrusted surface -> OPT-IN.
+        check("cwd config ignored by default (opt-in)", load_config() == {})
+        check("cwd config loaded when allow_cwd=True", load_config(allow_cwd=True)["marker"] == "cwd")
+        os.environ[ns.CWD_CONFIG_ENV_VAR] = "1"
+        check("cwd config loaded via CWD_CONFIG env", load_config()["marker"] == "cwd")
+        check("allow_cwd=False overrides CWD_CONFIG env", load_config(allow_cwd=False) == {})
+        os.environ[ns.NO_CWD_CONFIG_ENV_VAR] = "1"
+        check("NO_CWD_CONFIG env wins over CWD_CONFIG env", load_config() == {})
+        del os.environ[ns.NO_CWD_CONFIG_ENV_VAR]
+        del os.environ[ns.CWD_CONFIG_ENV_VAR]
+        check("cwd_config_enabled() default False", ns.cwd_config_enabled() is False)
+        check("cwd_config_enabled(True) is True", ns.cwd_config_enabled(True) is True)
+        check("cwd_config_enabled(False) is False", ns.cwd_config_enabled(False) is False)
         os.chdir(empty_dir)
         home_cfg = os.path.join(os.path.expanduser("~"), ".config",
                                 "named-subagents", "config.json")
@@ -523,6 +536,8 @@ with tempfile.TemporaryDirectory() as d:
             print("      (missing-config check skipped: real home config present)")
     finally:
         os.chdir(old_cwd)
+        os.environ.pop(ns.CWD_CONFIG_ENV_VAR, None)
+        os.environ.pop(ns.NO_CWD_CONFIG_ENV_VAR, None)
         if old_env is not None:
             os.environ[ns.CONFIG_ENV_VAR] = old_env
 

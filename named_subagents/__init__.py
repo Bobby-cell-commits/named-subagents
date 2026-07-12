@@ -41,6 +41,10 @@ DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")
 GEN_SEP = "·"  # middle dot, e.g. "Magellan·2" on the 2nd cycle of the pool
 
 CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CONFIG"
+# The implicit ./.named-subagents.json cwd config is the one untrusted-input
+# surface (SECURITY.md). As of 0.3 it is OPT-IN: off unless enabled below.
+NO_CWD_CONFIG_ENV_VAR = "NAMED_SUBAGENTS_NO_CWD_CONFIG"  # force off (also `--no-cwd-config`)
+CWD_CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CWD_CONFIG"  # opt back in (also `--cwd-config`)
 LEDGER_VERSION = 2
 
 # Registry / config files are semi-trusted local paths; a non-regular file
@@ -196,23 +200,62 @@ def _valid_name(name: object) -> bool:
 # --------------------------------------------------------------------------- #
 # Config (D5)
 # --------------------------------------------------------------------------- #
-def load_config(path: Optional[str] = None) -> dict:
+def _env_truthy(name: str) -> bool:
+    """A conventional 1/true/yes/on env flag (empty / 0 / false / no / off -> False)."""
+    return os.environ.get(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def cwd_config_enabled(cli_override: Optional[bool] = None) -> bool:
+    """Whether the implicit ./.named-subagents.json cwd config is auto-loaded.
+
+    It is the one *untrusted-input* surface (a project you cloned controls it),
+    so as of 0.3 it is OPT-IN. Precedence (first decisive wins):
+
+    1. explicit CLI flag — ``--cwd-config`` (True) / ``--no-cwd-config`` (False),
+       passed here as ``cli_override``
+    2. env — ``NAMED_SUBAGENTS_NO_CWD_CONFIG`` (off) beats
+       ``NAMED_SUBAGENTS_CWD_CONFIG`` (on)
+    3. default — **off**
+
+    An explicit ``--config PATH``, ``$NAMED_SUBAGENTS_CONFIG``, and the home
+    config (``~/.config/named-subagents/config.json``) are unaffected — they are
+    deliberately pointed-at or user-owned, hence trusted.
+    """
+    if cli_override is not None:
+        return cli_override
+    if _env_truthy(NO_CWD_CONFIG_ENV_VAR):
+        return False
+    if _env_truthy(CWD_CONFIG_ENV_VAR):
+        return True
+    return False
+
+
+def load_config(path: Optional[str] = None, allow_cwd: Optional[bool] = None) -> dict:
     """Load the user config. Search order (first existing wins):
 
     1. explicit `path`
     2. $NAMED_SUBAGENTS_CONFIG
-    3. ./.named-subagents.json
+    3. ./.named-subagents.json  — only when `allow_cwd` (see below); OFF by default
     4. ~/.config/named-subagents/config.json
+
+    `allow_cwd`: include the cwd candidate? None -> resolve from env/default via
+    `cwd_config_enabled()`; True/False force it. The cwd file is untrusted input
+    (SECURITY.md), so it is opt-in as of 0.3.
 
     No candidate exists -> {}. A found-but-invalid config fails loudly
     (never silently dropped).
     """
+    if allow_cwd is None:
+        allow_cwd = cwd_config_enabled()
     candidates = [
         path,
         os.environ.get(CONFIG_ENV_VAR),
-        os.path.join(".", ".named-subagents.json"),
-        os.path.join(os.path.expanduser("~"), ".config", "named-subagents", "config.json"),
     ]
+    if allow_cwd:
+        candidates.append(os.path.join(".", ".named-subagents.json"))
+    candidates.append(
+        os.path.join(os.path.expanduser("~"), ".config", "named-subagents", "config.json")
+    )
     for cand in candidates:
         if cand and os.path.isfile(cand):
             with open(cand, "r", encoding="utf-8") as fh:
@@ -378,12 +421,14 @@ class Registry:
 def load_with_config(
     registry_path: Optional[str] = None,
     config_path: Optional[str] = None,
+    allow_cwd: Optional[bool] = None,
 ) -> Tuple[Registry, dict]:
     """load_config + Registry.load in one call.
 
+    `allow_cwd` is threaded to `load_config` (cwd config opt-in; see there).
     Returns (registry, config) — the config is returned too because it may
     carry runtime-only keys the Registry doesn't store (e.g. "pins")."""
-    config = load_config(config_path)
+    config = load_config(config_path, allow_cwd=allow_cwd)
     return Registry.load(registry_path, config=config), config
 
 

@@ -143,8 +143,9 @@ get a clear `PoolExhaustedError` up front.
 
 ### Custom themes & config
 
-`./.named-subagents.json` (or `~/.config/named-subagents/config.json`, or
-`$NAMED_SUBAGENTS_CONFIG`, or `--config`):
+`--config PATH`, `$NAMED_SUBAGENTS_CONFIG`, or
+`~/.config/named-subagents/config.json` (and, **opt-in**, a project-local
+`./.named-subagents.json` — see the security note below):
 
 ```json
 { "pins": { "security": "Argus" },
@@ -157,6 +158,13 @@ New categories are added, same-key categories replace the bundled one, `extend`
 appends to an existing pool. Everything is re-validated on load — global
 uniqueness and a strict name pattern (see [SECURITY.md](SECURITY.md); custom
 names are untrusted input that ends up inside agent prompts).
+
+Since 0.3 the project-local **`./.named-subagents.json` is opt-in** — it is the
+one untrusted-input surface (a repo you cloned controls it), so it is *not*
+auto-loaded unless you pass `--cwd-config` or set `NAMED_SUBAGENTS_CWD_CONFIG=1`.
+`--no-cwd-config` (or `NAMED_SUBAGENTS_NO_CWD_CONFIG=1`) forces it off and wins
+over any opt-in. Explicit `--config PATH`, `$NAMED_SUBAGENTS_CONFIG`, and the
+home config are always honored (deliberate or user-owned).
 
 ### Collision-avoidance against real agents
 
