@@ -66,6 +66,12 @@ def updated_input(r):
 
 
 # --------------------------------------------------------------------------- #
+section("idempotency signature is coupled to persona_preamble (L3)")
+from named_subagents import persona_preamble  # noqa: E402
+check("SIG substring is present in persona_preamble() output",
+      SIG in persona_preamble("Testcallsign", "Explorers & navigators"))
+
+# --------------------------------------------------------------------------- #
 section("hook run — mutation on Agent")
 with tempfile.TemporaryDirectory() as d:
     env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "led.json")}
@@ -130,6 +136,16 @@ with tempfile.TemporaryDirectory() as d:
     check("fail-open on unwritable ledger -> no crash output on stderr",
           "Traceback" not in r.stderr, r.stderr[:200])
 
+# M1: unexpected argv on `hook run` must STILL exit 0 (argparse strictness would
+# sys.exit(2) — exit 2 blocks the dispatch, the one thing the contract forbids).
+with tempfile.TemporaryDirectory() as d:
+    env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "l.json")}
+    r = run_hook(payload("Agent", description="map x", prompt="t", subagent_type="Explore"),
+                 "run", "--some-future-flag", "extra-token", env_extra=env)
+    check("fail-open: unexpected argv on `hook run` exits 0 (never 2 = block)",
+          r.returncode == 0, f"rc={r.returncode} err={r.stderr[:160]}")
+    check("fail-open: unexpected argv still yields a mutation", updated_input(r) is not None)
+
 section("hook run — kill switch")
 r = run_hook(payload("Agent", description="x", prompt="t", subagent_type="Explore"),
              "run", env_extra={"NAMED_SUBAGENTS_HOOK_DISABLE": "1"})
@@ -150,6 +166,21 @@ with tempfile.TemporaryDirectory() as d:
         ui2 = updated_input(r2)
         check("re-run on already-named payload -> passthrough (no re-mutation)", ui2 is None,
               (ui2 or {}).get("prompt", "")[:120])
+
+# L2: an empty-prompt dispatch still gets a description prefix, and a re-fire on the
+# already-emoji-prefixed description must NOT double-prefix.
+with tempfile.TemporaryDirectory() as d:
+    env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "led.json")}
+    r1 = run_hook(payload("Agent", description="map billing", prompt="", subagent_type="code"),
+                  "run", env_extra=env)
+    ui1 = updated_input(r1)
+    check("empty-prompt dispatch still gets a description prefix",
+          bool(ui1) and ui1["description"] != "map billing", str(ui1))
+    if ui1:
+        r2 = run_hook(payload("Agent", description=ui1["description"], prompt="", subagent_type="code"),
+                      "run", env_extra=env)
+        check("emoji-prefixed description -> passthrough (no double-prefix)",
+              updated_input(r2) is None, (updated_input(r2) or {}).get("description", ""))
 
 section("hook run — distinct, non-repeating names")
 with tempfile.TemporaryDirectory() as d:

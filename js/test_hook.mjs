@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { personaPreamble } from "./named_subagents.mjs";
+
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
 const CLI = join(JS_DIR, "cli.mjs");
 const SIG = "parallel agents in this run.";
@@ -44,6 +46,11 @@ function updatedInput(r) {
   try { return JSON.parse(r.stdout).hookSpecificOutput.updatedInput; } catch { return null; }
 }
 function mkTmp() { return mkdtempSync(join(tmpdir(), "ns-hook-")); }
+
+// --------------------------------------------------------------------------- //
+section("idempotency signature coupled to personaPreamble (L3)");
+check("SIG substring present in personaPreamble() output",
+  personaPreamble("Testcallsign", "Explorers & navigators").includes(SIG));
 
 // --------------------------------------------------------------------------- //
 section("hook run — mutation on Agent");
@@ -114,6 +121,17 @@ for (const [label, stdin] of FAILOPEN) {
   check("fail-open on unwritable ledger dir -> exit 0", r.status === 0, (r.stderr || "").slice(0, 200));
   rmSync(d, { recursive: true, force: true });
 }
+// M1: unexpected argv on `hook run` must still exit 0 (never block).
+{
+  const d = mkTmp();
+  const env = { NAMED_SUBAGENTS_LEDGER: join(d, "l.json") };
+  const r = runHook(payload("Agent", { description: "map x", prompt: "t", subagent_type: "Explore" }),
+    ["run", "--some-future-flag", "extra-token"], env);
+  check("fail-open: unexpected argv on `hook run` exits 0 (never 2 = block)", r.status === 0,
+    `status=${r.status} err=${(r.stderr || "").slice(0, 160)}`);
+  check("fail-open: unexpected argv still yields a mutation", updatedInput(r) !== null);
+  rmSync(d, { recursive: true, force: true });
+}
 
 section("hook run — kill switch");
 {
@@ -134,6 +152,21 @@ section("hook run — idempotency (no double-preamble)");
       description: ui1.description, prompt: ui1.prompt, subagent_type: ui1.subagent_type,
     }), ["run"], env);
     check("re-run on already-named payload -> passthrough", updatedInput(r2) === null);
+  }
+  rmSync(d, { recursive: true, force: true });
+}
+
+section("hook run — no double-prefix on empty-prompt re-fire (L2)");
+{
+  const d = mkTmp();
+  const env = { NAMED_SUBAGENTS_LEDGER: join(d, "led.json") };
+  const r1 = runHook(payload("Agent", { description: "map billing", prompt: "", subagent_type: "code" }), ["run"], env);
+  const ui1 = updatedInput(r1);
+  check("empty-prompt dispatch still gets a description prefix",
+    ui1 && ui1.description !== "map billing", JSON.stringify(ui1));
+  if (ui1) {
+    const r2 = runHook(payload("Agent", { description: ui1.description, prompt: "", subagent_type: "code" }), ["run"], env);
+    check("emoji-prefixed description -> passthrough (no double-prefix)", updatedInput(r2) === null);
   }
   rmSync(d, { recursive: true, force: true });
 }

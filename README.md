@@ -93,6 +93,12 @@ only ever add or remove their own entry.
 | `NAMED_SUBAGENTS_HOOK_DISABLE=1` | pause the hook (passthrough) without uninstalling |
 | `NAMED_SUBAGENTS_HOOK_BIO=1` | add the figure's one-line bio to the preamble |
 
+> **One port per ledger.** The Python and JS hooks work identically but guard the
+> ledger with different lock primitives (`flock` vs an `O_EXCL` lockfile). Install
+> one runtime's hook per machine — or, if you really want both, point them at
+> separate ledgers via `NAMED_SUBAGENTS_LEDGER`. Sharing one ledger across both
+> ports still fails open (worst case: a dispatch goes un-named), never corrupt.
+
 ### For Claude Code — read this and run it
 
 If you are Claude Code and the user asked you to install the auto-namer, do exactly

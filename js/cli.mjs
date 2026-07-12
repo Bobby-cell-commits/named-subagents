@@ -611,7 +611,11 @@ function withLedgerLock(path, fn) {
       if (e.code !== "EEXIST") throw e;
       try {
         if (Date.now() - statSync(lock).mtimeMs > 15000) {
-          try { unlinkSync(lock); } catch { /* raced */ }
+          // Atomic steal: rename is atomic, so exactly ONE racer removes the stale
+          // lock; the losers get ENOENT and fall through to keep waiting. A blind
+          // unlink+recreate could let two processes both enter the section.
+          const stolen = `${lock}.stale-${process.pid}`;
+          try { renameSync(lock, stolen); unlinkSync(stolen); } catch { /* another racer won the steal */ }
           continue;
         }
       } catch { /* lock vanished between open and stat */ }
@@ -637,11 +641,16 @@ function hookMutate(event) {
   const prompt = str(ti.prompt);
   const description = str(ti.description);
   const subagentType = str(ti.subagent_type);
-  if (prompt.includes(PERSONA_SIG)) return null;      // idempotency: already named
 
   // Never auto-load ./.named-subagents.json — the hook runs in arbitrary
   // (possibly untrusted) dirs and its output lands in agent prompts.
   const { registry: reg } = loadWithConfig(null, null, false);
+  // Idempotency: two signals so an empty-prompt dispatch can't double-prefix —
+  // the persona preamble in the prompt, or a description already led by our emoji.
+  if (prompt.includes(PERSONA_SIG)) return null;
+  if (description && Object.keys(reg.categories).some((c) => description.startsWith(reg.emoji(c)))) {
+    return null;
+  }
   const cat = resolveCategory(reg, { role: subagentType || null, task: description || null });
 
   const lp = hookLedgerPath();
@@ -704,9 +713,17 @@ function readSettings(sp) {
 function writeSettings(sp, data, backup = false) {
   mkdirSync(dirname(sp) || ".", { recursive: true });
   if (backup && existsSync(sp)) copyFileSync(sp, sp + ".bak");
-  const tmp = sp + ".tmp";
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");  // std serializer for arbitrary settings
-  renameSync(tmp, sp);                                       // atomic
+  // 'wx' (O_EXCL) + a unique name: a pre-planted `<settings>.tmp` symlink can't
+  // redirect the write (same discipline as Ledger.save()).
+  const tmp = `${sp}.${process.pid}.tmp`;
+  try { unlinkSync(tmp); } catch { /* not present */ }
+  const fd = openSync(tmp, "wx");
+  try {
+    writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");   // std serializer for arbitrary settings
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, sp);                                         // atomic
 }
 
 function* iterOurHooks(pre) {
@@ -758,11 +775,12 @@ function cmdHookUninstall(opts) {
   let removed = 0;
   const newPre = [];
   for (const m of pre) {
-    if (!isObj(m)) { newPre.push(m); continue; }
-    const hs = m.hooks || [];
+    if (!isObj(m) || !Array.isArray(m.hooks)) { newPre.push(m); continue; }  // leave non-hooks blocks as-is
+    const hs = m.hooks;
     const kept = hs.filter((h) => !(isObj(h) && (h.command || "").includes(HOOK_MARKER)));
+    if (kept.length === hs.length) { newPre.push(m); continue; }             // nothing ours -> untouched
     removed += hs.length - kept.length;
-    if (kept.length || !hs.length) newPre.push({ ...m, hooks: kept });  // drop only a block WE emptied
+    if (kept.length) newPre.push({ ...m, hooks: kept });                     // else drop the emptied block
   }
   if (removed) {
     data.hooks.PreToolUse = newPre;

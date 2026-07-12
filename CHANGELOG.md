@@ -52,6 +52,10 @@ no per-call CLI invocation. The public 0.3 API is unchanged and additive.
 - `updatedInput` on the `Agent` tool is validated on Claude Code 2.1.207 but is not in
   the official hooks docs; the hook matches both `Agent` and `Task` and fails open, so
   a future rename degrades to a no-op rather than a broken dispatch.
+- **One port per ledger**: the Python and JS hooks guard the ledger with different lock
+  primitives (`flock` vs `O_EXCL` lockfile); install one runtime's hook per machine, or
+  point them at separate `NAMED_SUBAGENTS_LEDGER` paths. Sharing one ledger across both
+  ports still fails open (a dispatch may go un-named), never corrupt.
 
 ## [0.3.0] — 2026-07-12
 

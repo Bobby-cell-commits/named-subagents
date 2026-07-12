@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import named_subagents as ns
 from named_subagents import (
@@ -468,12 +469,17 @@ def _hook_mutate(event):
     prompt = _str(ti.get("prompt"))
     description = _str(ti.get("description"))
     subagent_type = _str(ti.get("subagent_type"))
-    # Idempotency: an already-named dispatch (a re-fire, or a caller that used
-    # `assign` first) already carries the persona preamble -> leave it untouched.
-    if _PERSONA_SIG in prompt:
-        return None
 
     reg, _cfg = _hook_registry()
+    # Idempotency: skip an already-named dispatch (a re-fire, or a caller that ran
+    # `assign` first). Two signals so an empty-prompt dispatch can't double-prefix:
+    # the persona preamble in the prompt, OR a description already led by one of our
+    # category emojis.
+    if _PERSONA_SIG in prompt:
+        return None
+    if description and any(description.startswith(reg.emoji(c)) for c in reg.categories):
+        return None
+
     cat = resolve_category(reg, role=subagent_type or None, task=description or None)
 
     led = Ledger(_hook_ledger_path())
@@ -493,7 +499,7 @@ def _hook_mutate(event):
     return {"hookEventName": "PreToolUse", "updatedInput": updated}
 
 
-def cmd_hook_run(args):
+def cmd_hook_run(args=None):
     """PreToolUse handler invoked by Claude Code. Reads the event JSON on stdin,
     writes a hookSpecificOutput JSON on stdout, always exits 0.
 
@@ -545,13 +551,23 @@ def _read_settings(sp):
 
 
 def _write_settings(sp, data, backup=False):
-    os.makedirs(os.path.dirname(os.path.abspath(sp)) or ".", exist_ok=True)
+    d = os.path.dirname(os.path.abspath(sp)) or "."
+    os.makedirs(d, exist_ok=True)
     if backup and os.path.exists(sp):
         shutil.copy2(sp, sp + ".bak")
-    tmp = sp + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    os.replace(tmp, sp)   # atomic
+    # mkstemp opens O_EXCL with a unique name, so a pre-planted `<settings>.tmp`
+    # symlink can't redirect the write (same discipline as Ledger.save()).
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(sp) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        os.replace(tmp, sp)   # atomic
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _iter_our_hooks(pre):
@@ -612,17 +628,19 @@ def cmd_hook_uninstall(args):
         return 0
     removed, new_pre = 0, []
     for m in pre:
-        if not isinstance(m, dict):
-            new_pre.append(m)
+        if not isinstance(m, dict) or not isinstance(m.get("hooks"), list):
+            new_pre.append(m)           # not a hooks block -> leave it exactly as-is
             continue
-        hs = m.get("hooks") or []
+        hs = m["hooks"]
         kept = [h for h in hs
                 if not (isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or ""))]
+        if len(kept) == len(hs):
+            new_pre.append(m)           # nothing of ours here -> untouched
+            continue
         removed += len(hs) - len(kept)
-        if kept or not hs:              # keep others; drop only a block WE emptied
-            m = dict(m)
-            m["hooks"] = kept
-            new_pre.append(m)
+        if kept:
+            new_pre.append({**m, "hooks": kept})   # keep the block with its survivors
+        # else: the block held ONLY our hook(s) -> drop the now-empty matcher block
     if removed:
         data["hooks"]["PreToolUse"] = new_pre
         _write_settings(sp, data, backup=True)
@@ -801,7 +819,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    # FAIL-OPEN fast path: `hook run` must NEVER exit non-zero on ANY argv — argparse
+    # is strict and sys.exit(2)s on an unexpected token, and exit 2 would BLOCK the
+    # dispatch (the one thing the contract forbids). Route it straight to the handler,
+    # bypassing argparse, so extra/unknown args can never turn into a blocking exit.
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    if argv_list[:2] == ["hook", "run"]:
+        return cmd_hook_run(None)
+    args = build_parser().parse_args(argv_list)
     try:
         return args.func(args)
     except (OSError, ValueError) as e:
