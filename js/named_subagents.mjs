@@ -439,6 +439,18 @@ export class Registry {
     }
     return null;
   }
+
+  /** Per-category list of the keywords that appear as substrings in `task`
+   * (case-insensitive) — the evidence behind resolve() / `resolve --explain`. */
+  keywordMatches(task) {
+    const t = task.toLowerCase();
+    const out = {};
+    for (const [cat, spec] of Object.entries(this.categories)) {
+      const hit = (spec.keywords || []).filter((kw) => t.includes(kw));
+      if (hit.length) out[cat] = hit;
+    }
+    return out;
+  }
 }
 
 /** loadConfig + Registry.load in one call. `allowCwd` is threaded to loadConfig

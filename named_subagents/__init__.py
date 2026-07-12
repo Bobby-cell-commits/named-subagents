@@ -423,6 +423,17 @@ class Registry:
                 return cat
         return None
 
+    def keyword_matches(self, task: str) -> Dict[str, List[str]]:
+        """Per-category list of the keywords that appear as substrings in `task`
+        (case-insensitive) — the evidence behind resolve() / ``resolve --explain``."""
+        t = task.lower()
+        out: Dict[str, List[str]] = {}
+        for cat, spec in self.categories.items():
+            hit = [kw for kw in spec.get("keywords", []) if kw in t]
+            if hit:
+                out[cat] = hit
+        return out
+
 
 def load_with_config(
     registry_path: Optional[str] = None,

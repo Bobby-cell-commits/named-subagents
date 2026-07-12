@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "purpose": "Labeled task->category set for measuring resolve_category accuracy. Tasks are natural developer phrasings; some deliberately omit the exact keyword, so the number reflects real-world resolution rather than a tautology. Run `python eval_resolution.py`.",
+    "resolution": "task-only (no explicit role/category); the keyword-substring heuristic",
+    "note": "Resolution is parity-identical across the Python and JS ports (parity_check.sh), so one runner measures both."
+  },
+  "cases": [
+    {"task": "find where the auth middleware is defined in this codebase", "expected": "explore"},
+    {"task": "give me a map of how the routing layer is structured", "expected": "explore"},
+    {"task": "implement a new endpoint for password reset", "expected": "code"},
+    {"task": "add pagination to the users list", "expected": "code"},
+    {"task": "compare vector databases for our use case", "expected": "research"},
+    {"task": "gather the literature on retrieval augmented generation", "expected": "research"},
+    {"task": "why did we choose event sourcing for the ledger", "expected": "reflect"},
+    {"task": "the login flow crashes intermittently, find the root cause", "expected": "debug"},
+    {"task": "reproduce and diagnose the failing payment webhook", "expected": "debug"},
+    {"task": "write edge case tests for the date parser", "expected": "test"},
+    {"task": "add fuzz coverage for the input sanitizer", "expected": "test"},
+    {"task": "review this pull request for correctness", "expected": "review"},
+    {"task": "audit the JWT handling for vulnerabilities", "expected": "security"},
+    {"task": "run a pentest against the file upload endpoint", "expected": "security"},
+    {"task": "improve the css layout of the settings page", "expected": "design"},
+    {"task": "the frontend component rendering looks off", "expected": "design"},
+    {"task": "write a sql query to aggregate daily signups", "expected": "data"},
+    {"task": "train an ml model on the churn dataset", "expected": "data"},
+    {"task": "break down this epic into parallel workstreams", "expected": "orchestrate"},
+    {"task": "coordinate the migration across three teams", "expected": "orchestrate"},
+    {"task": "write the readme for the new cli", "expected": "docs"},
+    {"task": "set up the docker deploy pipeline", "expected": "build"},
+    {"task": "optimize the api latency under load", "expected": "build"},
+    {"task": "hey what is up", "expected": "default"}
+  ]
+}

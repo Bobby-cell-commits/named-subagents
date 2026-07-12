@@ -56,6 +56,8 @@ export class Registry {
   totalNames(): number;
   bySubagentType(role: string): string | null;
   keywordScores(task: string): Record<string, number>;
+  /** Per-category keywords that substring-match `task` (evidence for --explain). */
+  keywordMatches(task: string): Record<string, string[]>;
   byKeyword(task: string): string | null;
 }
 

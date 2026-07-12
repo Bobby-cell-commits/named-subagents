@@ -33,7 +33,7 @@ const STATS_FLOAT_KEYS = new Set(["pct_used"]);
 // --------------------------------------------------------------------------- //
 // argv parsing (mirrors the Python argparse surface)
 // --------------------------------------------------------------------------- //
-const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config"]);
+const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config", "explain"]);
 const COMMANDS = new Set([
   "categories", "resolve", "allocate", "assign",
   "release", "retire", "unretire", "stats", "doctor", "bio",
@@ -155,10 +155,25 @@ function cmdCategories(opts) {
 
 function cmdResolve(opts) {
   const { registry: reg } = regCfg(opts);
-  const cat = resolveCategory(reg, {
-    role: opts.role, task: taskStr(opts), category: opts.category,
-  });
-  console.log(pyDumps({ category: cat, theme: reg.theme(cat), emoji: reg.emoji(cat) }));
+  const task = taskStr(opts);
+  const cat = resolveCategory(reg, { role: opts.role, task, category: opts.category });
+  const out = { category: cat, theme: reg.theme(cat), emoji: reg.emoji(cat) };
+  if (opts.explain) {
+    const role = opts.role || null;
+    let reason;
+    if (opts.category && hasOwn(reg.categories, opts.category)) reason = "category";
+    else if (role && reg.bySubagentType(role)) reason = "role";
+    else if (task && reg.byKeyword(task)) reason = "keyword";
+    else reason = "default";
+    out.explain = {
+      reason,
+      role,
+      role_match: role ? reg.bySubagentType(role) : null,
+      keyword_matches: task ? reg.keywordMatches(task) : {},
+      keyword_scores: task ? reg.keywordScores(task) : {},
+    };
+  }
+  console.log(pyDumps(out));
   return 0;
 }
 

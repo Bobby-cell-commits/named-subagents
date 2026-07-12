@@ -508,6 +508,15 @@ section("Attribution: attribute() verifies/repairs the [Nickname] prefix");
 }
 
 // --------------------------------------------------------------------------- //
+section("Resolution evidence: keywordMatches() (backs resolve --explain)");
+{
+  const km = REG.keywordMatches("audit the auth flow for vulnerabilities");
+  check("keywordMatches finds security 'audit'", (km.security || []).includes("audit"));
+  check("keywordMatches empty for a keyword-free task",
+    Object.keys(REG.keywordMatches("hey what is up")).length === 0);
+}
+
+// --------------------------------------------------------------------------- //
 section("Sessions: session() auto-recycles short-lived names");
 {
   const d = tmp();

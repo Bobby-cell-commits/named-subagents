@@ -94,8 +94,25 @@ def cmd_categories(args):
 def cmd_resolve(args):
     reg, _ = _reg_cfg(args)
     cat = resolve_category(reg, role=args.role, task=args.task, category=args.category)
-    print(json.dumps({"category": cat, "theme": reg.theme(cat), "emoji": reg.emoji(cat)},
-                     ensure_ascii=False))
+    out = {"category": cat, "theme": reg.theme(cat), "emoji": reg.emoji(cat)}
+    if getattr(args, "explain", False):
+        role, task = args.role, args.task
+        if args.category and args.category in reg.categories:
+            reason = "category"
+        elif role and reg.by_subagent_type(role):
+            reason = "role"
+        elif task and reg.by_keyword(task):
+            reason = "keyword"
+        else:
+            reason = "default"
+        out["explain"] = {
+            "reason": reason,
+            "role": role,
+            "role_match": reg.by_subagent_type(role) if role else None,
+            "keyword_matches": reg.keyword_matches(task) if task else {},
+            "keyword_scores": reg.keyword_scores(task) if task else {},
+        }
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def cmd_allocate(args):
@@ -442,6 +459,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sr = sub.add_parser("resolve", help="show which category a role/task maps to")
     sr.add_argument("--role"); sr.add_argument("--task"); sr.add_argument("--category")
+    sr.add_argument("--explain", action="store_true",
+                    help="show why this category was chosen (winning arm, matched keywords, scores)")
     add_common_flags(sr)
     sr.set_defaults(func=cmd_resolve)
 

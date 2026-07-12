@@ -38,6 +38,7 @@ const reg2: Registry = Registry.load(null, { config: loadConfig() });
 const cfg: UserConfig = loadConfig("x.json", true);
 const rc: { registry: Registry; config: UserConfig } = loadWithConfig(null, null, false);
 const cat: string = resolveCategory(reg, { role: "Explore", task: "map", category: null });
+const kmatch: Record<string, string[]> = reg.keywordMatches("audit auth");
 const names: string[] = allocate("explore", 3, reg, { ledger: null, avoid: ["x"] });
 const led: Ledger = new Ledger(null);
 const sess: string[] = led.session((l) => l.used("explore"));
@@ -87,6 +88,6 @@ cwdConfigEnabled("yes");
 export const _surface = [
   _v, _g, _ce, _nc, _cc, _lv, _np, _ck, _du, reg, reg2, cfg, rc, cat, names, led,
   stats, sess, plan, one, kwargs, labels, wf, sw, pre, attributed, issue,
-  enabled, stripped, valid, installed, dumped, floatRepr, err, _cs, _rd, _ro,
-  _lr, _ao, _sr, _bo, _fo, _asg,
+  enabled, stripped, valid, installed, dumped, floatRepr, err, kmatch,
+  _cs, _rd, _ro, _lr, _ao, _sr, _bo, _fo, _asg,
 ] as const;

@@ -509,6 +509,14 @@ check("idempotent on a repaired report",
       ns.attribute("Magellan", ns.attribute("Magellan", "[Cook]\nbody")) == "[Magellan]\nbody")
 
 # --------------------------------------------------------------------------- #
+section("Resolution evidence: keyword_matches() (backs resolve --explain)")
+_reg_km = ns.Registry.load()
+check("keyword_matches finds security 'audit'",
+      "audit" in _reg_km.keyword_matches("audit the auth flow for vulnerabilities").get("security", []))
+check("keyword_matches empty for a keyword-free task",
+      _reg_km.keyword_matches("hey what is up") == {})
+
+# --------------------------------------------------------------------------- #
 section("Sessions + locking: session() auto-recycles, lock() serializes")
 with tempfile.TemporaryDirectory() as d:
     reg = ns.Registry.load()
