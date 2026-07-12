@@ -85,6 +85,10 @@ jobs:
         # for a short-lived PyPI credential. Configure the trusted publisher
         # on pypi.org first (RELEASING.md), or the first run fails closed.
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Idempotent re-runs: don't fail if this version is already on PyPI
+          # (e.g. re-releasing a tag after fixing a downstream npm-only failure).
+          skip-existing: true
 
   npm:
     name: Publish to npm (with provenance)
