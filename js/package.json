@@ -1,6 +1,6 @@
 {
   "name": "named-subagents",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Themed, non-repeating nicknames for Claude Code subagents — a userspace port of Codex's nickname_candidates (JS/ESM twin of the Python reference)",
   "type": "module",
   "main": "./named_subagents.mjs",

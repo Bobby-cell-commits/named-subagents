@@ -33,6 +33,7 @@ native via `subagent_type` / `.claude/agents/*.md`) and its **nickname** (which
 | `nickname_candidates` (per-instance display) | *(none)* | ✅ themed pools |
 | — | — | ✅ non-repeat across runs (ledger) |
 | — | — | ✅ task → theme auto-matching |
+| — | — | ✅ **install-once auto-namer** (one hook, every fan-out) |
 | — | — | ✅ pins, bios, custom themes, stats, doctor |
 
 ## Install
@@ -45,6 +46,84 @@ npm  i      named-subagents     # Node ≥ 16, ESM, zero dependencies, types shi
 Both ship the same 395-name registry and a `named-subagents` CLI. Or vendor it:
 drop the `named_subagents/` folder (Python) or `js/named_subagents.mjs` +
 `registry.json` (JS) into your repo — stdlib/`node:` builtins only.
+
+## Auto-namer: install once, names every fan-out
+
+Everything below the fold is opt-in — you call `assign`/`allocate` and wire the
+names in yourself. The **auto-namer** removes that step: one Claude Code hook that
+nicknames *every* subagent dispatch automatically. A parallel fan-out that used to
+show three identical `Explore` labels shows three distinct explorers, with zero
+code on your side.
+
+```bash
+named-subagents hook install     # register the PreToolUse hook in ~/.claude/settings.json
+named-subagents hook status      # verify: installed? ledger path? names used so far
+```
+
+That's the whole setup. **New** Claude Code sessions now rewrite each dispatch's
+task line to `🧭 Hudson: map the auth module` and prepend a persona preamble so
+parallel results come back attributed by nickname. Pause it any time with
+`NAMED_SUBAGENTS_HOOK_DISABLE=1` (no uninstall needed), or remove it with
+`named-subagents hook uninstall`.
+
+**How it works.** A `PreToolUse` hook matched to the `Agent`/`Task` tool. On each
+dispatch it allocates a themed, non-repeating nickname (the same ledger +
+generation machinery as the CLI, flock-serialized so a parallel fan-out never
+collides on a name) and returns `hookSpecificOutput.updatedInput` that prefixes the
+`description` and preambles the `prompt`.
+
+**Honest limits.** The nickname lands on the dispatch **description** (the task line
+your runner shows) — Claude Code has no per-instance display-name field, so the
+agent *type* label (`Explore`) is unchanged and the nickname rides alongside it. The
+`[Hudson]` self-tag in the agent's reply is best-effort (an agent may ignore the
+preamble); the deterministic attribution is the description, always applied. And
+`updatedInput` on the `Agent` tool, while validated on Claude Code 2.1.207, is
+undocumented — so the hook **fails open**: any error, or a future tool rename,
+degrades to a normal un-named dispatch, never a broken one.
+
+**Safety.** `hook run` never exits non-zero (a broken namer must never break your
+fan-out), never changes your permission posture (it returns only `updatedInput`,
+never auto-allow), and never auto-loads the untrusted `./.named-subagents.json`.
+`install`/`uninstall` back up `settings.json`, refuse to touch malformed JSON, and
+only ever add or remove their own entry.
+
+| Env var | Effect |
+|---|---|
+| `NAMED_SUBAGENTS_LEDGER` | ledger path (default `~/.local/state/named-subagents/hook-ledger.json`) |
+| `NAMED_SUBAGENTS_HOOK_DISABLE=1` | pause the hook (passthrough) without uninstalling |
+| `NAMED_SUBAGENTS_HOOK_BIO=1` | add the figure's one-line bio to the preamble |
+
+### For Claude Code — read this and run it
+
+If you are Claude Code and the user asked you to install the auto-namer, do exactly
+this. It is safe: idempotent, backs up `settings.json`, and fails open.
+
+1. **Install the package** (pick the runtime the user has; Python is the default):
+   ```bash
+   pip install named-subagents        # or:  npm i -g named-subagents
+   ```
+2. **Register the hook** — global (all projects):
+   ```bash
+   named-subagents hook install
+   ```
+   Scope it to one project instead with `named-subagents hook install --project .`
+3. **Verify** it registered and actually runs:
+   ```bash
+   named-subagents hook status
+   printf '{"tool_name":"Agent","tool_input":{"description":"map auth","prompt":"go","subagent_type":"Explore"}}' \
+     | named-subagents hook run
+   ```
+   `status` must show `installed:  yes`. The `hook run` line must print JSON whose
+   `updatedInput.description` starts with an emoji + a nickname (e.g.
+   `🧭 Hudson: map auth`). If both hold, the install is working.
+4. **Tell the user**: hooks load at session start, so the auto-namer takes effect in
+   **new** Claude Code sessions — they should open a fresh session to see nicknamed
+   fan-outs. To pause: `export NAMED_SUBAGENTS_HOOK_DISABLE=1`. To remove:
+   `named-subagents hook uninstall`.
+
+Do **not** hand-edit `~/.claude/settings.json` — `hook install` does the merge
+safely (backup + atomic write + idempotent re-install). If `hook install` reports the
+settings file is malformed, surface that to the user and stop; never overwrite it.
 
 ## Themes
 
@@ -125,6 +204,8 @@ named-subagents assign   --role Explore --task "map the router" \
 named-subagents bio Heimdall                    # who is this figure?
 named-subagents stats  --ledger .ledger.json    # pool burn-down, generations
 named-subagents doctor                          # self-checks (see below)
+named-subagents hook install                    # auto-name every fan-out (see "Auto-namer" above)
+named-subagents hook status                     # is the hook installed? ledger usage
 ```
 
 > **Recording a demo?** `scripts/record-demo.sh` runs a short, narrated
@@ -240,7 +321,9 @@ an **identity layer that composes _under_** orchestrators like `claude-swarm`,
 ```bash
 python3 test_named_subagents.py     # 266 checks incl. state-machine campaigns
 node js/test_named_subagents.mjs    # 279 checks (mirror suite)
-scripts/parity_check.sh             # cross-language gate (both runtimes)
+python3 test_hook.py                # auto-namer: fail-open, concurrency, install merge-safety
+node js/test_hook.mjs               # auto-namer mirror suite
+scripts/parity_check.sh             # cross-language gate (both runtimes, incl. hook run)
 ```
 
 CI runs Python 3.8/3.12/3.13, Node 18/20/22, install smokes for both package

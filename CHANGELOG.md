@@ -3,6 +3,56 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.4.0] — 2026-07-12
+
+Install-once **auto-namer**. The whole point of the package — themed, non-repeating
+subagent nicknames — now happens automatically on every Claude Code fan-out, with
+no per-call CLI invocation. The public 0.3 API is unchanged and additive.
+
+### Added
+- **`hook` command** (`run` / `install` / `uninstall` / `status`, both ports) — a
+  PreToolUse hook on the `Agent`/`Task` tool. `install` registers it in Claude Code
+  `settings.json` (global, or `--project DIR` / `--settings PATH`), merge-safe with
+  a `.bak` backup and idempotent re-install. On every subagent dispatch the hook
+  allocates a themed non-repeating nickname and rewrites the dispatch's `description`
+  (`🧭 Hudson: <desc>`) and `prompt` (persona preamble) via
+  `hookSpecificOutput.updatedInput`. Feasibility validated end-to-end on Claude Code
+  2.1.207.
+- **`python -m named_subagents`** now works (new `__main__.py`) — the robust form the
+  hook registers (`python -m named_subagents hook run`), independent of the console
+  script being on the hook's PATH.
+- **Concurrency-safe allocation**: a parallel fan-out fires the hook once per
+  subagent; allocation is serialized (Python `flock`; JS O_EXCL lockfile with
+  stale-lock breaking) so N simultaneous dispatches get N distinct names.
+- **Env knobs**: `NAMED_SUBAGENTS_LEDGER` (ledger path; default
+  `~/.local/state/named-subagents/hook-ledger.json`), `NAMED_SUBAGENTS_HOOK_DISABLE`
+  (kill switch — passthrough without uninstalling), `NAMED_SUBAGENTS_HOOK_BIO`
+  (include the nickname's bio in the preamble).
+
+### Robustness
+- **Fail-open is the contract**: `hook run` never exits non-zero and never blocks a
+  dispatch. Garbage/empty/malformed stdin, missing fields, an unwritable or locked
+  ledger, or a registry error all silently pass the dispatch through with its
+  original input. 11 fail-open cases + an 8-way concurrency race are regression-tested
+  in both ports; `hook run` output is byte-identical across ports (parity gate).
+- **Never force-allow**: the hook returns only `updatedInput`, no `permissionDecision`
+  — it renames a dispatch, it does not change your permission posture.
+- **Never auto-loads `./.named-subagents.json`**: the hook runs in arbitrary (possibly
+  cloned) project dirs and its output lands in agent prompts, so the one
+  untrusted-input surface stays off regardless of environment.
+- `install`/`uninstall` refuse to touch a `settings.json` that isn't valid JSON, write
+  atomically (temp + rename), and only ever remove the entry they own (identified by a
+  `--managed-by` marker arg, robust to shell-vs-exec parsing).
+
+### Caveats (honest)
+- The nickname rides on the dispatch **`description`** — there is no per-instance
+  display-label field in Claude Code, so the agent's *type* label (`Explore`, …) is
+  unchanged. The reply self-tag `[Nickname]` is best-effort (an agent may ignore the
+  preamble); the deterministic attribution is the description, not agent compliance.
+- `updatedInput` on the `Agent` tool is validated on Claude Code 2.1.207 but is not in
+  the official hooks docs; the hook matches both `Agent` and `Task` and fails open, so
+  a future rename degrades to a no-op rather than a broken dispatch.
+
 ## [0.3.0] — 2026-07-12
 
 Adoption, supply-chain, and depth. The public 0.2 API is unchanged except the
