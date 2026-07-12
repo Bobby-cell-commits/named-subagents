@@ -70,6 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # OIDC — the whole point of Trusted Publishing; no token stored
+      contents: read # a job-level permissions block REPLACES defaults; checkout needs this
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
