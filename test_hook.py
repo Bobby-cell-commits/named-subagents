@@ -72,6 +72,36 @@ check("SIG substring is present in persona_preamble() output",
       SIG in persona_preamble("Testcallsign", "Explorers & navigators"))
 
 # --------------------------------------------------------------------------- #
+section("Ledger.lock(timeout=) is bounded — never hang (MED-1)")
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+if _fcntl is None:
+    check("lock-timeout test skipped (no fcntl on this platform)", True)
+else:
+    import time as _time
+    from named_subagents import Ledger as _Ledger
+    with tempfile.TemporaryDirectory() as _d:
+        _lp = os.path.join(_d, "led.json")
+        _held = os.open(_lp + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        _fcntl.flock(_held, _fcntl.LOCK_EX)          # hold the lock from another fd
+        try:
+            _t0 = _time.monotonic()
+            _raised = False
+            try:
+                with _Ledger(_lp).lock(timeout=0.3):
+                    pass
+            except TimeoutError:
+                _raised = True
+            _elapsed = _time.monotonic() - _t0
+            check("lock(timeout=) raises TimeoutError on a held lock (no hang)", _raised)
+            check("lock(timeout=) returns near its deadline (<2s)", _elapsed < 2.0, f"{_elapsed:.2f}s")
+        finally:
+            _fcntl.flock(_held, _fcntl.LOCK_UN)
+            os.close(_held)
+
+# --------------------------------------------------------------------------- #
 section("hook run — mutation on Agent")
 with tempfile.TemporaryDirectory() as d:
     env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "led.json")}
@@ -136,15 +166,19 @@ with tempfile.TemporaryDirectory() as d:
     check("fail-open on unwritable ledger -> no crash output on stderr",
           "Traceback" not in r.stderr, r.stderr[:200])
 
-# M1: unexpected argv on `hook run` must STILL exit 0 (argparse strictness would
-# sys.exit(2) — exit 2 blocks the dispatch, the one thing the contract forbids).
+# M1: unexpected argv on `hook run` must STILL exit 0 — argparse / the JS parser
+# sys.exit(2) on an unexpected token, and exit 2 BLOCKS the dispatch. The TRAILING
+# VALUELESS flag (`--managed-by` with no value) is the decisive case: a strict parser
+# consumes the next token as its value and errors when there isn't one.
 with tempfile.TemporaryDirectory() as d:
     env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "l.json")}
-    r = run_hook(payload("Agent", description="map x", prompt="t", subagent_type="Explore"),
-                 "run", "--some-future-flag", "extra-token", env_extra=env)
-    check("fail-open: unexpected argv on `hook run` exits 0 (never 2 = block)",
-          r.returncode == 0, f"rc={r.returncode} err={r.stderr[:160]}")
-    check("fail-open: unexpected argv still yields a mutation", updated_input(r) is not None)
+    for extra in (["--some-future-flag", "extra-token"], ["--managed-by"], ["--future-flag"]):
+        r = run_hook(payload("Agent", description="map x", prompt="t", subagent_type="Explore"),
+                     "run", *extra, env_extra=env)
+        label = " ".join(extra)
+        check(f"fail-open: `hook run {label}` exits 0 (never 2 = block)",
+              r.returncode == 0, f"rc={r.returncode} err={r.stderr[:160]}")
+        check(f"fail-open: `hook run {label}` still yields a mutation", updated_input(r) is not None)
 
 section("hook run — kill switch")
 r = run_hook(payload("Agent", description="x", prompt="t", subagent_type="Explore"),
@@ -181,6 +215,13 @@ with tempfile.TemporaryDirectory() as d:
                       "run", env_extra=env)
         check("emoji-prefixed description -> passthrough (no double-prefix)",
               updated_input(r2) is None, (updated_input(r2) or {}).get("description", ""))
+    # LOW-1: a NORMAL (prompted) dispatch whose description happens to start with a
+    # category emoji must STILL be named — the emoji probe is empty-prompt-only.
+    r3 = run_hook(payload("Agent", description="📊 quarterly revenue chart",
+                          prompt="Build the chart.", subagent_type="data"), "run", env_extra=env)
+    ui3 = updated_input(r3)
+    check("emoji-led description WITH a prompt is still named (no false idempotency)",
+          bool(ui3) and SIG in ui3.get("prompt", ""), str(ui3)[:120])
 
 section("hook run — distinct, non-repeating names")
 with tempfile.TemporaryDirectory() as d:

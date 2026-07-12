@@ -121,15 +121,19 @@ for (const [label, stdin] of FAILOPEN) {
   check("fail-open on unwritable ledger dir -> exit 0", r.status === 0, (r.stderr || "").slice(0, 200));
   rmSync(d, { recursive: true, force: true });
 }
-// M1: unexpected argv on `hook run` must still exit 0 (never block).
+// M1: unexpected argv on `hook run` must still exit 0 (never block). The TRAILING
+// VALUELESS flag (`--managed-by` with no value) is the decisive case — a strict
+// parser (argparse / this port's parseArgs) exit-2s when the value is missing.
 {
   const d = mkTmp();
   const env = { NAMED_SUBAGENTS_LEDGER: join(d, "l.json") };
-  const r = runHook(payload("Agent", { description: "map x", prompt: "t", subagent_type: "Explore" }),
-    ["run", "--some-future-flag", "extra-token"], env);
-  check("fail-open: unexpected argv on `hook run` exits 0 (never 2 = block)", r.status === 0,
-    `status=${r.status} err=${(r.stderr || "").slice(0, 160)}`);
-  check("fail-open: unexpected argv still yields a mutation", updatedInput(r) !== null);
+  for (const extra of [["--some-future-flag", "extra-token"], ["--managed-by"], ["--future-flag"]]) {
+    const r = runHook(payload("Agent", { description: "map x", prompt: "t", subagent_type: "Explore" }),
+      ["run", ...extra], env);
+    check(`fail-open: hook run ${extra.join(" ")} exits 0 (never 2 = block)`, r.status === 0,
+      `status=${r.status} err=${(r.stderr || "").slice(0, 160)}`);
+    check(`fail-open: hook run ${extra.join(" ")} still yields a mutation`, updatedInput(r) !== null);
+  }
   rmSync(d, { recursive: true, force: true });
 }
 
@@ -168,6 +172,12 @@ section("hook run — no double-prefix on empty-prompt re-fire (L2)");
     const r2 = runHook(payload("Agent", { description: ui1.description, prompt: "", subagent_type: "code" }), ["run"], env);
     check("emoji-prefixed description -> passthrough (no double-prefix)", updatedInput(r2) === null);
   }
+  // LOW-1: a NORMAL (prompted) dispatch whose description starts with a category
+  // emoji must STILL be named — the emoji probe is empty-prompt-only.
+  const r3 = runHook(payload("Agent", { description: "📊 quarterly revenue chart", prompt: "Build the chart.", subagent_type: "data" }), ["run"], env);
+  const ui3 = updatedInput(r3);
+  check("emoji-led description WITH a prompt is still named (no false idempotency)",
+    ui3 && (ui3.prompt || "").includes(SIG), JSON.stringify(ui3));
   rmSync(d, { recursive: true, force: true });
 }
 

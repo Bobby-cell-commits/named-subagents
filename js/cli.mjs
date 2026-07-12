@@ -648,7 +648,11 @@ function hookMutate(event) {
   // Idempotency: two signals so an empty-prompt dispatch can't double-prefix —
   // the persona preamble in the prompt, or a description already led by our emoji.
   if (prompt.includes(PERSONA_SIG)) return null;
-  if (description && Object.keys(reg.categories).some((c) => description.startsWith(reg.emoji(c)))) {
+  // Fall back to a description-emoji probe ONLY when there's no prompt (a rare
+  // empty-prompt re-fire). A prompted dispatch is governed by the SIG above, so a
+  // legit description like "📊 Q3 chart" isn't wrongly treated as already-named.
+  if (!prompt && description
+      && Object.keys(reg.categories).some((c) => description.startsWith(reg.emoji(c)))) {
     return null;
   }
   const cat = resolveCategory(reg, { role: subagentType || null, task: description || null });
@@ -720,10 +724,13 @@ function writeSettings(sp, data, backup = false) {
   const fd = openSync(tmp, "wx");
   try {
     writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");   // std serializer for arbitrary settings
-  } finally {
     closeSync(fd);
+    renameSync(tmp, sp);                                       // atomic
+  } catch (e) {
+    try { closeSync(fd); } catch { /* already closed */ }
+    try { unlinkSync(tmp); } catch { /* nothing to clean */ }  // never leave a stray temp
+    throw e;
   }
-  renameSync(tmp, sp);                                         // atomic
 }
 
 function* iterOurHooks(pre) {
@@ -854,7 +861,12 @@ const HANDLERS = {
 };
 
 function main() {
-  const { cmd, opts } = parseArgs(process.argv.slice(2));
+  const raw = process.argv.slice(2);
+  // FAIL-OPEN fast path: `hook run` must NEVER exit non-zero on ANY argv. parseArgs
+  // die()s (process.exit(2)) on a trailing valueless flag, and exit 2 would BLOCK the
+  // dispatch — the one thing the contract forbids. Route it straight to the handler.
+  if (raw[0] === "hook" && raw[1] === "run") return cmdHookRun();
+  const { cmd, opts } = parseArgs(raw);
   if (opts.version) {
     console.log(`named-subagents ${VERSION}`);
     return 0;

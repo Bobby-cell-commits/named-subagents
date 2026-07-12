@@ -477,7 +477,11 @@ def _hook_mutate(event):
     # category emojis.
     if _PERSONA_SIG in prompt:
         return None
-    if description and any(description.startswith(reg.emoji(c)) for c in reg.categories):
+    # Fall back to a description-emoji probe ONLY when there's no prompt (a rare
+    # empty-prompt re-fire). A prompted dispatch is governed by the SIG above, so a
+    # legit description like "📊 Q3 chart" isn't wrongly treated as already-named.
+    if not prompt and description and any(
+            description.startswith(reg.emoji(c)) for c in reg.categories):
         return None
 
     cat = resolve_category(reg, role=subagent_type or None, task=description or None)
@@ -485,9 +489,9 @@ def _hook_mutate(event):
     led = Ledger(_hook_ledger_path())
     if led.path:
         os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
-    with led.lock():                       # flock: concurrent fan-out can't collide
-        nickname = allocate(cat, 1, reg, ledger=led)[0]
-        led.save()
+    with led.lock(timeout=10):             # flock (bounded): concurrent fan-out can't
+        nickname = allocate(cat, 1, reg, ledger=led)[0]   # collide; a wedged peer
+        led.save()                                        # degrades to fail-open, not a hang
 
     emoji, theme = reg.emoji(cat), reg.theme(cat)
     bio = reg.bio(cat, _strip_gen(nickname)) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
