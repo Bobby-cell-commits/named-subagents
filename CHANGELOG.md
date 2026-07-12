@@ -3,10 +3,48 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.3.0] — 2026-07-12
+
+Adoption, supply-chain, and depth. The public 0.2 API is unchanged except the
+one breaking default below.
+
+### Added
+- **Release automation with provenance**: `.github/workflows/release.yml` — a
+  `vX.Y.Z` tag runs a verify gate (full matrix + `doctor` + tag/version match)
+  then publishes to PyPI via **OIDC Trusted Publishing** (no stored token) and
+  npm with **Sigstore provenance** (`--provenance`), and cuts a GitHub Release
+  from this changelog. One-time setup in `RELEASING.md`.
+- **cwd-config opt-in knobs**: `--cwd-config` / `NAMED_SUBAGENTS_CWD_CONFIG` to
+  enable the project-local config; `--no-cwd-config` /
+  `NAMED_SUBAGENTS_NO_CWD_CONFIG` to force it off (wins). `cwd_config_enabled()`
+  / `cwdConfigEnabled()` exposed.
+- **`attribute(nickname, report)`** (both ports): verify/repair the `[Nickname]`
+  attribution prefix on raw report text (idempotent). The display label was
+  always deterministic (dispatch metadata) — this is only for the text path.
+- **Ledger sessions + locking**: `session()` (both ports) auto-releases
+  short-lived names on block exit; Python `Ledger.lock()` — an opt-in POSIX
+  `flock` context manager that serializes a load→allocate→save critical section,
+  closing the documented single-writer race.
+- **`resolve --explain`** (both ports): shows the winning arm, matched keywords,
+  and hit-count scores. New `keyword_matches()` / `keywordMatches()` method.
+- **Resolution accuracy eval**: `resolution_eval.json` (24 labeled tasks) +
+  `eval_resolution.py`, reported in CI (currently 23/24 = 95.8%).
+- **Type-surface verification**: fixed a `.d.ts` drift (`ledgerRecordIssue` was
+  undeclared); a runtime drift-guard + a `tsc` type-test (`js/tsconfig.json` +
+  `js/types_test.ts`, CI `types` job) now check the `.d.ts` against the runtime;
+  shipped a **`py.typed`** marker (packaged + CI-verified in the wheel).
+
+### Changed
+- **BREAKING**: the project-local `./.named-subagents.json` (the one
+  untrusted-input surface) is no longer auto-loaded — it is now **opt-in**. Pass
+  `--cwd-config` or set `NAMED_SUBAGENTS_CWD_CONFIG=1` to restore it. Explicit
+  `--config`, `$NAMED_SUBAGENTS_CONFIG`, and the home config are unaffected. (No
+  released users — 0.2 was never published.)
+
 ## [0.2.0] — 2026-07-10
 
-The "launch" release: every feature deferred from 0.1 (`FINDINGS.md` §8),
-packaging for both ecosystems, and a security/self-diagnostics pass.
+The "launch" release: every feature deferred from 0.1, packaging for both
+ecosystems, and a security/self-diagnostics pass.
 
 ### Added
 - **Packaging**: `pip install named-subagents` (pyproject, console script) and
@@ -49,9 +87,8 @@ packaging for both ecosystems, and a security/self-diagnostics pass.
 - `installed agent` disjointness is now enforceable at runtime, not just a
   static test.
 
-### Security & hardening (pre-launch adversarial review)
-Two independent audits (correctness + security) ran against the integrated
-build; every finding below was fixed in **both** ports with regression tests:
+### Security & hardening
+Every item below was fixed in **both** ports with regression tests:
 - **Config prompt-injection closed**: `theme`, `emoji`, and `blurb` from a user
   config now get the same strict sanitization as names/bios — backticks,
   brackets, the `·` separator, and Unicode bidi/format/zero-width/separator

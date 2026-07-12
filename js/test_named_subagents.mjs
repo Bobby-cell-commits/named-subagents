@@ -1,7 +1,7 @@
 /**
  * Comprehensive + stress tests for named_subagents.mjs (assert-free, no deps).
  * Mirrors the Python suite's v0.1 + v0.2 coverage, including the state-machine
- * campaigns and the steelman regressions.
+ * campaigns and the adversarial regressions.
  * Run:  node js/test_named_subagents.mjs   (exits non-zero on any failure)
  */
 import { spawnSync } from "node:child_process";
@@ -15,10 +15,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   Registry, Ledger, PoolExhaustedError, GEN_SEP, CONFIG_ENV_VAR,
+  CWD_CONFIG_ENV_VAR, NO_CWD_CONFIG_ENV_VAR, cwdConfigEnabled,
   allocate, resolveCategory, planFanout, assignOne, loadConfig,
   installedAgentNames, ledgerRecordIssue, ledgerStats, personaPreamble,
   toLabels, toWorkflow, toSwarm, stripGen, pyDumps, pyRound1, formatPyFloat,
 } from "./named_subagents.mjs";
+import * as NS_ALL from "./named_subagents.mjs";
 
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(JS_DIR);
@@ -35,6 +37,27 @@ function section(t) { console.log(`\n== ${t} ==`); }
 function tmp() { return mkdtempSync(join(tmpdir(), "ns-")); }
 function throws(fn, errClass = null) {
   try { fn(); return false; } catch (e) { return errClass ? e instanceof errClass : true; }
+}
+
+// --------------------------------------------------------------------------- //
+section("Type surface: named_subagents.d.ts matches the runtime (drift guard)");
+{
+  // Cheap, zero-tooling reconciliation of the hand-written .d.ts against the
+  // actual runtime exports (the deeper signature check is `tsc -p tsconfig.json`
+  // over types_test.ts). This would have caught the pre-0.3 `ledgerRecordIssue`
+  // gap. Leading-underscore exports are intentional internals, excluded.
+  const dts = readFileSync(join(JS_DIR, "named_subagents.d.ts"), "utf8");
+  const declared = new Set(
+    [...dts.matchAll(/^export\s+(?:declare\s+)?(?:const|function|class)\s+([A-Za-z_$][\w$]*)/gm)]
+      .map((m) => m[1]),
+  );
+  const runtime = Object.keys(NS_ALL).filter((k) => !k.startsWith("_"));
+  const undeclared = runtime.filter((k) => !declared.has(k));
+  check(".d.ts declares every public runtime export", undeclared.length === 0,
+    `undeclared: ${undeclared.join(", ")}`);
+  const phantom = [...declared].filter((k) => !(k in NS_ALL));
+  check("every .d.ts value declaration exists at runtime", phantom.length === 0,
+    `phantom: ${phantom.join(", ")}`);
 }
 
 // --------------------------------------------------------------------------- //
@@ -396,7 +419,7 @@ section("PROTO PORT: retire-while-held (C5) — transient overlap is harmless");
 }
 
 // --------------------------------------------------------------------------- //
-section("STEELMAN REGRESSIONS");
+section("ADVERSARIAL REGRESSIONS");
 // "Name\n" must be rejected — JS `^…$` without the m flag is already
 // end-anchored (Python needs re.fullmatch for the same guarantee); prove it.
 check('"Name\\n" rejected (end-anchored pattern)',
@@ -470,6 +493,51 @@ section("avoid (D8): case-insensitive base-name exclusion");
 }
 
 // --------------------------------------------------------------------------- //
+section("Attribution: attribute() verifies/repairs the [Nickname] prefix");
+{
+  const A = NS_ALL.attribute;
+  check("correct tag -> unchanged (idempotent)", A("Magellan", "[Magellan]\nbody") === "[Magellan]\nbody");
+  check("wrong/other bracket tag -> replaced", A("Magellan", "[Cook]\nbody") === "[Magellan]\nbody");
+  check("no tag -> prepended", A("Magellan", "body") === "[Magellan]\nbody");
+  check("empty report -> bare tag", A("Magellan", "") === "[Magellan]");
+  check("whitespace-only report -> bare tag", A("Magellan", "   \n  ") === "[Magellan]");
+  check("leading blank lines -> prepend to original", A("Magellan", "\n\nbody") === "[Magellan]\n\n\nbody");
+  check("generation-suffixed nickname", A("Magellan·2", "body") === "[Magellan·2]\nbody");
+  check("bracketed but not tag-only first line -> prepend", A("Magellan", "[INFO] x\ny") === "[Magellan]\n[INFO] x\ny");
+  check("idempotent on a repaired report", A("Magellan", A("Magellan", "[Cook]\nbody")) === "[Magellan]\nbody");
+}
+
+// --------------------------------------------------------------------------- //
+section("Resolution evidence: keywordMatches() (backs resolve --explain)");
+{
+  const km = REG.keywordMatches("audit the auth flow for vulnerabilities");
+  check("keywordMatches finds security 'audit'", (km.security || []).includes("audit"));
+  check("keywordMatches empty for a keyword-free task",
+    Object.keys(REG.keywordMatches("hey what is up")).length === 0);
+}
+
+// --------------------------------------------------------------------------- //
+section("Sessions: session() auto-recycles short-lived names");
+{
+  const d = tmp();
+  const reg = Registry.load();
+  const lp = join(d, "ledger.json");
+  const led = new Ledger(lp);
+  const drawn = led.session((l) => allocate("explore", 3, reg, { ledger: l }));
+  check("session drew 3 names", drawn.length === 3);
+  check("session released the drawn names on exit", led.used("explore").length === 0);
+  const redraw = led.session((l) => allocate("explore", 3, reg, { ledger: l }));
+  check("recycled names are redrawable", JSON.stringify(redraw) === JSON.stringify(drawn));
+  const keep = allocate("explore", 2, reg, { ledger: led });
+  const inblock = led.session((l) => allocate("explore", 2, reg, { ledger: l }));
+  const usedNow = new Set(led.used("explore"));
+  check("pre-session names kept", keep.map(stripGen).every((n) => usedNow.has(n)));
+  check("in-session names released", inblock.map(stripGen).every((n) => !usedNow.has(n)));
+  check("session returns fn result", Array.isArray(inblock));
+  rmSync(d, { recursive: true, force: true });
+}
+
+// --------------------------------------------------------------------------- //
 section("Config (D5): search order");
 {
   const d = tmp();
@@ -487,12 +555,25 @@ section("Config (D5): search order");
   try {
     process.env[CONFIG_ENV_VAR] = envP;
     process.chdir(cwdDir);
-    check("explicit path beats env + cwd", loadConfig(explicitP).marker === "explicit");
-    check("env beats cwd", loadConfig().marker === "env");
+    // explicit path + env are trusted (deliberate) -> always considered.
+    check("explicit path beats env + cwd", loadConfig(explicitP, true).marker === "explicit");
+    check("env beats cwd (cwd opted in)", loadConfig(null, true).marker === "env");
     check("pins surface via loadConfig",
       JSON.stringify(loadConfig(explicitP).pins) === JSON.stringify({ security: "Argus" }));
     delete process.env[CONFIG_ENV_VAR];
-    check("cwd .named-subagents.json found", loadConfig().marker === "cwd");
+    // 0.3: the cwd .named-subagents.json is the one untrusted surface -> OPT-IN.
+    check("cwd config ignored by default (opt-in)", Object.keys(loadConfig()).length === 0);
+    check("cwd config loaded when allowCwd=true", loadConfig(null, true).marker === "cwd");
+    process.env[CWD_CONFIG_ENV_VAR] = "1";
+    check("cwd config loaded via CWD_CONFIG env", loadConfig().marker === "cwd");
+    check("allowCwd=false overrides CWD_CONFIG env", Object.keys(loadConfig(null, false)).length === 0);
+    process.env[NO_CWD_CONFIG_ENV_VAR] = "1";
+    check("NO_CWD_CONFIG env wins over CWD_CONFIG env", Object.keys(loadConfig()).length === 0);
+    delete process.env[NO_CWD_CONFIG_ENV_VAR];
+    delete process.env[CWD_CONFIG_ENV_VAR];
+    check("cwdConfigEnabled() default false", cwdConfigEnabled() === false);
+    check("cwdConfigEnabled(true) is true", cwdConfigEnabled(true) === true);
+    check("cwdConfigEnabled(false) is false", cwdConfigEnabled(false) === false);
     process.chdir(emptyDir);
     const homeCfg = join(homedir(), ".config", "named-subagents", "config.json");
     if (!existsSync(homeCfg)) {
@@ -503,6 +584,8 @@ section("Config (D5): search order");
   } finally {
     process.chdir(oldCwd);
     if (oldEnv !== undefined) process.env[CONFIG_ENV_VAR] = oldEnv;
+    delete process.env[CWD_CONFIG_ENV_VAR];
+    delete process.env[NO_CWD_CONFIG_ENV_VAR];
     rmSync(d, { recursive: true, force: true });
   }
 }
@@ -737,7 +820,7 @@ function runCli(args, envExtra = null) {
 {
   let r = runCli(["--version"]);
   check("--version exits 0", r.status === 0, r.stderr);
-  check("--version prints the version", r.stdout.includes("0.2.0"), r.stdout);
+  check("--version prints the version", r.stdout.includes(NS_ALL.VERSION), r.stdout);
 
   const d = tmp();
   const lp = join(d, "cli-ledger.json");

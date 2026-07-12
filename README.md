@@ -106,11 +106,19 @@ its report with `[Hudson]`, so parallel results come back **attributed by
 nickname**. Add `with_bio=True` / `withBio: true` (CLI: `--bio-in-prompt`) and
 each agent also learns who it's named after.
 
+**Attribution never depended on the agent complying.** The nickname is already
+in the dispatch metadata — it *is* the display label your runner shows — so it
+is deterministic regardless of what the agent writes. The `[Hudson]` self-tag is
+only for the case where you have the raw report *text* and nothing else; for
+that path, `attribute(nickname, report)` / `attribute()` verifies the prefix and
+repairs it (missing → prepended, wrong nickname → replaced; idempotent).
+
 ### CLI
 
 ```bash
 named-subagents categories                      # the 14 themes
 named-subagents resolve  --task "audit auth for injection"     # -> security
+named-subagents resolve  --task "audit auth" --explain         # ...+ why (keywords, scores)
 named-subagents allocate --category reflect --count 3
 named-subagents assign   --role Explore --task "map the router" \
                          --count 4 --ledger .ledger.json       # Agent payloads
@@ -118,6 +126,10 @@ named-subagents bio Heimdall                    # who is this figure?
 named-subagents stats  --ledger .ledger.json    # pool burn-down, generations
 named-subagents doctor                          # self-checks (see below)
 ```
+
+> **Recording a demo?** `scripts/record-demo.sh` runs a short, narrated
+> walkthrough suitable for `asciinema rec` (or pipe the cast to a GIF) — see its
+> header for the exact commands.
 
 ### Stable identities: pins
 
@@ -143,8 +155,9 @@ get a clear `PoolExhaustedError` up front.
 
 ### Custom themes & config
 
-`./.named-subagents.json` (or `~/.config/named-subagents/config.json`, or
-`$NAMED_SUBAGENTS_CONFIG`, or `--config`):
+`--config PATH`, `$NAMED_SUBAGENTS_CONFIG`, or
+`~/.config/named-subagents/config.json` (and, **opt-in**, a project-local
+`./.named-subagents.json` — see the security note below):
 
 ```json
 { "pins": { "security": "Argus" },
@@ -157,6 +170,13 @@ New categories are added, same-key categories replace the bundled one, `extend`
 appends to an existing pool. Everything is re-validated on load — global
 uniqueness and a strict name pattern (see [SECURITY.md](SECURITY.md); custom
 names are untrusted input that ends up inside agent prompts).
+
+Since 0.3 the project-local **`./.named-subagents.json` is opt-in** — it is the
+one untrusted-input surface (a repo you cloned controls it), so it is *not*
+auto-loaded unless you pass `--cwd-config` or set `NAMED_SUBAGENTS_CWD_CONFIG=1`.
+`--no-cwd-config` (or `NAMED_SUBAGENTS_NO_CWD_CONFIG=1`) forces it off and wins
+over any opt-in. Explicit `--config PATH`, `$NAMED_SUBAGENTS_CONFIG`, and the
+home config are always honored (deliberate or user-owned).
 
 ### Collision-avoidance against real agents
 
@@ -233,16 +253,15 @@ managers, and the parity gate.
 | `named_subagents/` | Python package (reference impl) + **canonical `registry.json`** |
 | `js/` | JS/ESM npm package (twin port; `js/registry.json` is generated at pack time) |
 | `skill/named-fanout/` | Claude Code skill wrapping the CLI |
-| `FINDINGS.md` / `COMMUNITY.md` | research record + ecosystem survey |
+| `COMMUNITY.md` | ecosystem survey |
 | `SECURITY.md` / `CONTRIBUTING.md` | threat model / parity discipline |
-| `ROADMAP.md` | candidate improvements for future releases |
+| `RELEASING.md` | release process |
 
-## Roadmap
+## Contributing
 
-Planned and candidate work lives in [`ROADMAP.md`](ROADMAP.md) — adoption
-artifacts, release automation with supply-chain provenance, a config
-auto-load opt-out, type-surface verification, and a possible install-once
-auto-namer. Contributions welcome (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
+Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
+cross-language parity discipline. Bug reports and ideas via
+[issues](https://github.com/Bobby-cell-commits/named-subagents/issues).
 
 ## License
 

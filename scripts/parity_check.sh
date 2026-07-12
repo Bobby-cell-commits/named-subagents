@@ -19,13 +19,16 @@ for cat in explore debug security default; do
 done
 echo "  [PASS] fresh allocation identical (4 categories)"
 
-# 2 — resolution parity (role + task routing)
-for args in "--role Explore" "--task 'audit auth for injection vulnerabilities'"; do
+# 2 — resolution parity (role + task routing, incl. --explain evidence)
+for args in "--role Explore" \
+            "--task 'audit auth for injection vulnerabilities'" \
+            "--task 'audit auth for injection vulnerabilities' --explain" \
+            "--role Explore --explain"; do
   eval "$PY resolve $args" > "$TMP/py.json"
   eval "$JS resolve $args" > "$TMP/js.json"
   diff -u "$TMP/py.json" "$TMP/js.json" > /dev/null || fail "resolve $args differs"
 done
-echo "  [PASS] category resolution identical"
+echo "  [PASS] category resolution identical (incl. --explain)"
 
 # 3 — shared ledger: python starts, node continues, no repeats, identical stats
 L="$TMP/shared-ledger.json"

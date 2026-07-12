@@ -20,9 +20,13 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 export const GEN_SEP = "·"; // middle dot, e.g. "Magellan·2" on the 2nd cycle of the pool
 export const CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CONFIG";
+// The implicit ./.named-subagents.json cwd config is the one untrusted-input
+// surface (SECURITY.md). As of 0.3 it is OPT-IN: off unless enabled below.
+export const NO_CWD_CONFIG_ENV_VAR = "NAMED_SUBAGENTS_NO_CWD_CONFIG"; // force off (also `--no-cwd-config`)
+export const CWD_CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CWD_CONFIG"; // opt back in (also `--cwd-config`)
 export const LEDGER_VERSION = 2;
 
 // Registry / config files are semi-trusted local paths; a non-regular file
@@ -229,20 +233,42 @@ function isFile(p) {
   }
 }
 
+function envTruthy(name) {
+  const v = (process.env[name] || "").trim().toLowerCase();
+  return v !== "" && v !== "0" && v !== "false" && v !== "no" && v !== "off";
+}
+
+/** Whether the implicit ./.named-subagents.json cwd config is auto-loaded. It
+ * is the one *untrusted-input* surface (a project you cloned controls it), so
+ * as of 0.3 it is OPT-IN. Precedence (first decisive wins):
+ *   1. explicit CLI flag — --cwd-config (true) / --no-cwd-config (false), passed
+ *      here as cliOverride
+ *   2. env — NAMED_SUBAGENTS_NO_CWD_CONFIG (off) beats NAMED_SUBAGENTS_CWD_CONFIG (on)
+ *   3. default — off
+ * An explicit --config PATH, $NAMED_SUBAGENTS_CONFIG, and the home config are
+ * unaffected — deliberately pointed-at or user-owned, hence trusted. */
+export function cwdConfigEnabled(cliOverride = null) {
+  if (cliOverride !== null) return cliOverride;
+  if (envTruthy(NO_CWD_CONFIG_ENV_VAR)) return false;
+  if (envTruthy(CWD_CONFIG_ENV_VAR)) return true;
+  return false;
+}
+
 /** Load the user config. Search order (first existing wins):
  *  1. explicit `path`
  *  2. $NAMED_SUBAGENTS_CONFIG
- *  3. ./.named-subagents.json
+ *  3. ./.named-subagents.json  — only when `allowCwd` (below); OFF by default
  *  4. ~/.config/named-subagents/config.json
+ * `allowCwd`: include the cwd candidate? null -> resolve from env/default via
+ * cwdConfigEnabled(); true/false force it. The cwd file is untrusted input
+ * (SECURITY.md), so it is opt-in as of 0.3.
  * No candidate exists -> {}. A found-but-invalid config fails loudly
  * (never silently dropped). */
-export function loadConfig(path = null) {
-  const candidates = [
-    path,
-    process.env[CONFIG_ENV_VAR],
-    join(".", ".named-subagents.json"),
-    join(homedir(), ".config", "named-subagents", "config.json"),
-  ];
+export function loadConfig(path = null, allowCwd = null) {
+  if (allowCwd === null) allowCwd = cwdConfigEnabled();
+  const candidates = [path, process.env[CONFIG_ENV_VAR]];
+  if (allowCwd) candidates.push(join(".", ".named-subagents.json"));
+  candidates.push(join(homedir(), ".config", "named-subagents", "config.json"));
   for (const cand of candidates) {
     if (cand && isFile(cand)) {
       const loaded = JSON.parse(readFileSync(cand, "utf8")); // corrupt JSON throws: loud by design
@@ -413,13 +439,26 @@ export class Registry {
     }
     return null;
   }
+
+  /** Per-category list of the keywords that appear as substrings in `task`
+   * (case-insensitive) — the evidence behind resolve() / `resolve --explain`. */
+  keywordMatches(task) {
+    const t = task.toLowerCase();
+    const out = {};
+    for (const [cat, spec] of Object.entries(this.categories)) {
+      const hit = (spec.keywords || []).filter((kw) => t.includes(kw));
+      if (hit.length) out[cat] = hit;
+    }
+    return out;
+  }
 }
 
-/** loadConfig + Registry.load in one call.
+/** loadConfig + Registry.load in one call. `allowCwd` is threaded to loadConfig
+ * (cwd config opt-in; see there).
  * Returns {registry, config} — the config is returned too because it may
  * carry runtime-only keys the Registry doesn't store (e.g. "pins"). */
-export function loadWithConfig(registryPath = null, configPath = null) {
-  const config = loadConfig(configPath);
+export function loadWithConfig(registryPath = null, configPath = null, allowCwd = null) {
+  const config = loadConfig(configPath, allowCwd);
   return { registry: Registry.load(registryPath, { config }), config };
 }
 
@@ -588,6 +627,31 @@ export class Ledger {
       } catch (e) {
         if (e && e.code === "EEXIST" && attempt < 100) continue;
         throw e;
+      }
+    }
+  }
+
+  /** Draw names inside `fn(ledger)`; auto-release them afterward so short-lived
+   * names recycle without manual release() calls. Best-effort: releases the base
+   * names newly added to each category's `used` during the call (sorted, so both
+   * ports match). A draw that crossed a generation boundary may not fully
+   * recycle. Returns fn's result. Callback form = the JS analogue of Python's
+   * `with ledger.session():`. (Cross-process locking is Python/Unix-only — a
+   * Node fan-out is typically single-process; serialize writers if not.) */
+  session(fn) {
+    const before = {};
+    for (const c of Object.keys(this.state)) {
+      if (c !== "_v") before[c] = new Set(this.used(c));
+    }
+    try {
+      return fn(this);
+    } finally {
+      for (const c of Object.keys(this.state)) {
+        if (c === "_v") continue;
+        const seen = before[c] || new Set();
+        for (const name of [...new Set(this.used(c))].filter((n) => !seen.has(n)).sort()) {
+          this.release(c, name);
+        }
       }
     }
   }
@@ -845,6 +909,30 @@ export function personaPreamble(nickname, theme, bio = null) {
     + bioLine
     + `--- YOUR TASK ---\n`
   );
+}
+
+const ATTR_TAG_RE = /^\s*\[[^\]]*\]\s*$/;
+
+/** Ensure `report` begins with the attribution line `[nickname]` (verify/repair
+ * the prefix for the text-parsing path). Attribution does NOT depend on this —
+ * the nickname is in the dispatch metadata (the display label) regardless of
+ * whether the agent complied; use only when you have raw report text.
+ *   - first non-blank line already `[nickname]` -> unchanged
+ *   - first non-blank line a *different* bracket-only tag -> replaced
+ *   - no leading bracket-only tag -> `[nickname]` prepended
+ * Idempotent; byte-identical to Python attribute(). */
+export function attribute(nickname, report) {
+  const tag = `[${nickname}]`;
+  if (!report || !report.trim()) return tag;
+  const lines = report.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i++;
+  if (lines[i].trim() === tag) return report;
+  if (ATTR_TAG_RE.test(lines[i])) {
+    lines[i] = tag;
+    return lines.join("\n");
+  }
+  return tag + "\n" + report;
 }
 
 function shortTask(task) {

@@ -48,9 +48,23 @@ _PKG_DIR = os.path.dirname(os.path.abspath(ns.__file__ or "."))
 _REPO_ROOT = os.path.dirname(_PKG_DIR)
 
 
+def _cwd_override(args):
+    """--no-cwd-config (False, wins) / --cwd-config (True) -> allow_cwd, else None."""
+    if getattr(args, "no_cwd_config", False):
+        return False
+    if getattr(args, "cwd_config", False):
+        return True
+    return None
+
+
 def _reg_cfg(args):
-    """(Registry, config) honoring --registry and --config (+ search order)."""
-    return load_with_config(getattr(args, "registry", None), getattr(args, "config", None))
+    """(Registry, config) honoring --registry, --config, and the cwd-config
+    opt-in flags (--cwd-config / --no-cwd-config; cwd config is off by default)."""
+    return load_with_config(
+        getattr(args, "registry", None),
+        getattr(args, "config", None),
+        allow_cwd=_cwd_override(args),
+    )
 
 
 def _ledger(args):
@@ -80,8 +94,25 @@ def cmd_categories(args):
 def cmd_resolve(args):
     reg, _ = _reg_cfg(args)
     cat = resolve_category(reg, role=args.role, task=args.task, category=args.category)
-    print(json.dumps({"category": cat, "theme": reg.theme(cat), "emoji": reg.emoji(cat)},
-                     ensure_ascii=False))
+    out = {"category": cat, "theme": reg.theme(cat), "emoji": reg.emoji(cat)}
+    if getattr(args, "explain", False):
+        role, task = args.role, args.task
+        if args.category and args.category in reg.categories:
+            reason = "category"
+        elif role and reg.by_subagent_type(role):
+            reason = "role"
+        elif task and reg.by_keyword(task):
+            reason = "keyword"
+        else:
+            reason = "default"
+        out["explain"] = {
+            "reason": reason,
+            "role": role,
+            "role_match": reg.by_subagent_type(role) if role else None,
+            "keyword_matches": reg.keyword_matches(task) if task else {},
+            "keyword_scores": reg.keyword_scores(task) if task else {},
+        }
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def cmd_allocate(args):
@@ -396,7 +427,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--registry", help="path to registry.json (default: bundled)")
     p.add_argument("--config",
                    help="path to a config file (default search: $NAMED_SUBAGENTS_CONFIG, "
-                        "./.named-subagents.json, ~/.config/named-subagents/config.json)")
+                        "~/.config/named-subagents/config.json; ./.named-subagents.json only "
+                        "with --cwd-config)")
+    p.add_argument("--cwd-config", dest="cwd_config", action="store_true",
+                   help="opt in to loading ./.named-subagents.json (off by default since 0.3 "
+                        "— it is the one untrusted-input surface)")
+    p.add_argument("--no-cwd-config", dest="no_cwd_config", action="store_true",
+                   help="never load ./.named-subagents.json (wins over --cwd-config and "
+                        "$NAMED_SUBAGENTS_CWD_CONFIG)")
     p.add_argument("--version", action="version", version=f"named-subagents {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -408,6 +446,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="path to registry.json (also accepted before the subcommand)")
         sp.add_argument("--config", default=argparse.SUPPRESS,
                         help="path to a config file (also accepted before the subcommand)")
+        sp.add_argument("--cwd-config", dest="cwd_config", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="opt in to ./.named-subagents.json (also accepted before the subcommand)")
+        sp.add_argument("--no-cwd-config", dest="no_cwd_config", action="store_true",
+                        default=argparse.SUPPRESS,
+                        help="never load ./.named-subagents.json (also accepted before the subcommand)")
 
     sc = sub.add_parser("categories", help="list categories + themes")
     add_common_flags(sc)
@@ -415,6 +459,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sr = sub.add_parser("resolve", help="show which category a role/task maps to")
     sr.add_argument("--role"); sr.add_argument("--task"); sr.add_argument("--category")
+    sr.add_argument("--explain", action="store_true",
+                    help="show why this category was chosen (winning arm, matched keywords, scores)")
     add_common_flags(sr)
     sr.set_defaults(func=cmd_resolve)
 
