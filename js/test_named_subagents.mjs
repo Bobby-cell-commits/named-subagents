@@ -820,7 +820,7 @@ function runCli(args, envExtra = null) {
 {
   let r = runCli(["--version"]);
   check("--version exits 0", r.status === 0, r.stderr);
-  check("--version prints the version", r.stdout.includes("0.2.0"), r.stdout);
+  check("--version prints the version", r.stdout.includes(NS_ALL.VERSION), r.stdout);
 
   const d = tmp();
   const lp = join(d, "cli-ledger.json");

@@ -833,7 +833,7 @@ def run_cli(*argv, env_extra=None):
 
 r = run_cli("--version")
 check("--version exits 0", r.returncode == 0, r.stderr)
-check("--version prints the version", "0.2.0" in r.stdout, r.stdout)
+check("--version prints the version", ns.__version__ in r.stdout, r.stdout)
 
 with tempfile.TemporaryDirectory() as d:
     lp = os.path.join(d, "cli-ledger.json")

@@ -5,6 +5,19 @@ is committed work — it's a backlog to pull from. Each item notes whether it's
 **grounded** (a real, verified gap) or **speculative** (optimizes for a case we
 haven't confirmed occurs — validate the premise before building it).
 
+## Shipped in 0.3.0 (see CHANGELOG)
+
+Tier 1 **#2** (release + provenance), **#3** (cwd-config opt-in), **#4**
+(type-surface + `py.typed`); Tier 2 **#5** (auto-namer — a **feasibility spike +
+runnable probe** in `experiments/auto-namer-probe/`, not the machinery — the
+verdict says probe-before-build), **#6** (attribution helper), **#7** (sessions
++ opt-in flock), **#8** (resolution eval + `resolve --explain`).
+
+**Remaining:** Tier 1 **#1**'s adoption media (asciicast/GIF) + the actual
+npm/PyPI **publish** (needs registry accounts + the one-time OIDC/token setup in
+`RELEASING.md`); Tier 2 **#9** (lint / type-check / coverage in CI); Tier 3
+polish. Don't-build-yet **#12** (project salt) stays parked.
+
 ## Context
 
 v0.2 shipped every originally-deferred feature (see `CHANGELOG.md`). The honest

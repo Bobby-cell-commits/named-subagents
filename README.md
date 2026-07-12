@@ -118,6 +118,7 @@ repairs it (missing → prepended, wrong nickname → replaced; idempotent).
 ```bash
 named-subagents categories                      # the 14 themes
 named-subagents resolve  --task "audit auth for injection"     # -> security
+named-subagents resolve  --task "audit auth" --explain         # ...+ why (keywords, scores)
 named-subagents allocate --category reflect --count 3
 named-subagents assign   --role Explore --task "map the router" \
                          --count 4 --ledger .ledger.json       # Agent payloads
@@ -125,6 +126,10 @@ named-subagents bio Heimdall                    # who is this figure?
 named-subagents stats  --ledger .ledger.json    # pool burn-down, generations
 named-subagents doctor                          # self-checks (see below)
 ```
+
+> **Recording a demo?** `scripts/record-demo.sh` runs a short, narrated
+> walkthrough suitable for `asciinema rec` (or pipe the cast to a GIF) — see its
+> header for the exact commands.
 
 ### Stable identities: pins
 
@@ -254,10 +259,13 @@ managers, and the parity gate.
 
 ## Roadmap
 
-Planned and candidate work lives in [`ROADMAP.md`](ROADMAP.md) — adoption
-artifacts, release automation with supply-chain provenance, a config
-auto-load opt-out, type-surface verification, and a possible install-once
-auto-namer. Contributions welcome (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
+0.3.0 shipped most of the backlog — release automation with supply-chain
+provenance, cwd-config opt-in, type-surface verification + `py.typed`,
+attribution + ledger session/lock helpers, and `resolve --explain` backed by a
+measured accuracy eval (see [`CHANGELOG.md`](CHANGELOG.md)). What's left —
+adoption media, the actual npm/PyPI publish, lint/coverage CI, and the
+probe-gated auto-namer — is tracked in [`ROADMAP.md`](ROADMAP.md). Contributions
+welcome (see [`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
 ## License
 
