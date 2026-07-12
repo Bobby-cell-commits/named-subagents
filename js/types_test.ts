@@ -12,8 +12,8 @@ import {
   LEDGER_VERSION, NAME_PATTERN, CATEGORY_KEY_PATTERN, DEFAULT_REGISTRY_URL,
   stripGen, validName, ledgerRecordIssue, loadConfig, loadWithConfig,
   cwdConfigEnabled, resolveCategory, allocate, installedAgentNames, ledgerStats,
-  personaPreamble, buildAssignment, planFanout, assignOne, toLabels, toWorkflow,
-  toSwarm, pyDumps, pyRound1, formatPyFloat,
+  personaPreamble, attribute, buildAssignment, planFanout, assignOne, toLabels,
+  toWorkflow, toSwarm, pyDumps, pyRound1, formatPyFloat,
 } from "named-subagents";
 import type {
   CategorySpec, RegistryData, UserConfig, ResolveOpts, LedgerRecord,
@@ -48,6 +48,7 @@ const labels: LabelEntry[] = toLabels(plan);
 const wf: string = toWorkflow(plan);
 const sw: string = toSwarm(plan);
 const pre: string = personaPreamble("Magellan", "Explorers", "a navigator");
+const attributed: string = attribute("Magellan", "[Cook]\nbody");
 const issue: string | null = ledgerRecordIssue({ used: [] });
 const enabled: boolean = cwdConfigEnabled(true);
 const stripped: string = stripGen("Magellan·2");
@@ -84,6 +85,7 @@ cwdConfigEnabled("yes");
 // failure (each name here had to resolve against the .d.ts to type-check).
 export const _surface = [
   _v, _g, _ce, _nc, _cc, _lv, _np, _ck, _du, reg, reg2, cfg, rc, cat, names, led,
-  stats, plan, one, kwargs, labels, wf, sw, pre, issue, enabled, stripped, valid,
-  installed, dumped, floatRepr, err, _cs, _rd, _ro, _lr, _ao, _sr, _bo, _fo, _asg,
+  stats, plan, one, kwargs, labels, wf, sw, pre, attributed, issue, enabled,
+  stripped, valid, installed, dumped, floatRepr, err, _cs, _rd, _ro, _lr, _ao,
+  _sr, _bo, _fo, _asg,
 ] as const;

@@ -874,6 +874,30 @@ export function personaPreamble(nickname, theme, bio = null) {
   );
 }
 
+const ATTR_TAG_RE = /^\s*\[[^\]]*\]\s*$/;
+
+/** Ensure `report` begins with the attribution line `[nickname]` (verify/repair
+ * the prefix for the text-parsing path). Attribution does NOT depend on this —
+ * the nickname is in the dispatch metadata (the display label) regardless of
+ * whether the agent complied; use only when you have raw report text.
+ *   - first non-blank line already `[nickname]` -> unchanged
+ *   - first non-blank line a *different* bracket-only tag -> replaced
+ *   - no leading bracket-only tag -> `[nickname]` prepended
+ * Idempotent; byte-identical to Python attribute(). */
+export function attribute(nickname, report) {
+  const tag = `[${nickname}]`;
+  if (!report || !report.trim()) return tag;
+  const lines = report.split("\n");
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i++;
+  if (lines[i].trim() === tag) return report;
+  if (ATTR_TAG_RE.test(lines[i])) {
+    lines[i] = tag;
+    return lines.join("\n");
+  }
+  return tag + "\n" + report;
+}
+
 function shortTask(task) {
   // Python: " ".join(task.split())[:44] — whitespace-normalize, slice 44 code points.
   return codePoints(task.split(/\s+/).filter(Boolean).join(" ")).slice(0, 44).join("");

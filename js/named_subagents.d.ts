@@ -153,6 +153,11 @@ export function ledgerStats(registry: Registry, ledger: Ledger): LedgerStats;
  * inserted immediately before the `--- YOUR TASK ---` line. */
 export function personaPreamble(nickname: string, theme: string, bio?: string | null): string;
 
+/** Ensure `report` begins with the attribution line `[nickname]` (verify/repair
+ * the prefix for the text-parsing path). Attribution does not depend on this —
+ * the nickname is in the dispatch metadata regardless of agent compliance. */
+export function attribute(nickname: string, report: string): string;
+
 export interface Assignment {
   nickname: string;
   category: string;

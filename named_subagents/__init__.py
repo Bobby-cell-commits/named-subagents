@@ -848,6 +848,38 @@ def persona_preamble(nickname: str, theme: str, bio: Optional[str] = None) -> st
     )
 
 
+_ATTR_TAG_RE = re.compile(r"^\s*\[[^\]]*\]\s*$")
+
+
+def attribute(nickname: str, report: str) -> str:
+    """Ensure `report` begins with the attribution line ``[nickname]``.
+
+    The persona preamble only *asks* an agent to self-tag; this verifies/repairs
+    the prefix for the text-parsing path. Attribution does **not** depend on it —
+    the nickname is in the dispatch metadata (the display label) regardless of
+    whether the agent complied; use this only when you have raw report text.
+
+    - first non-blank line is already ``[nickname]`` -> returned unchanged
+    - first non-blank line is a *different* bracket-only tag -> replaced
+    - no leading bracket-only tag -> ``[nickname]`` is prepended
+
+    Idempotent: ``attribute(n, attribute(n, r)) == attribute(n, r)``.
+    """
+    tag = "[%s]" % nickname
+    if not report or not report.strip():
+        return tag
+    lines = report.split("\n")
+    i = 0
+    while i < len(lines) and lines[i].strip() == "":
+        i += 1
+    if lines[i].strip() == tag:
+        return report
+    if _ATTR_TAG_RE.match(lines[i]):
+        lines[i] = tag
+        return "\n".join(lines)
+    return tag + "\n" + report
+
+
 class Assignment(NamedTuple):
     nickname: str
     category: str

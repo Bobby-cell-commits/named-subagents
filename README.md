@@ -106,6 +106,13 @@ its report with `[Hudson]`, so parallel results come back **attributed by
 nickname**. Add `with_bio=True` / `withBio: true` (CLI: `--bio-in-prompt`) and
 each agent also learns who it's named after.
 
+**Attribution never depended on the agent complying.** The nickname is already
+in the dispatch metadata — it *is* the display label your runner shows — so it
+is deterministic regardless of what the agent writes. The `[Hudson]` self-tag is
+only for the case where you have the raw report *text* and nothing else; for
+that path, `attribute(nickname, report)` / `attribute()` verifies the prefix and
+repairs it (missing → prepended, wrong nickname → replaced; idempotent).
+
 ### CLI
 
 ```bash

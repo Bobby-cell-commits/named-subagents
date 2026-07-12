@@ -493,6 +493,21 @@ section("avoid (D8): case-insensitive base-name exclusion");
 }
 
 // --------------------------------------------------------------------------- //
+section("Attribution: attribute() verifies/repairs the [Nickname] prefix");
+{
+  const A = NS_ALL.attribute;
+  check("correct tag -> unchanged (idempotent)", A("Magellan", "[Magellan]\nbody") === "[Magellan]\nbody");
+  check("wrong/other bracket tag -> replaced", A("Magellan", "[Cook]\nbody") === "[Magellan]\nbody");
+  check("no tag -> prepended", A("Magellan", "body") === "[Magellan]\nbody");
+  check("empty report -> bare tag", A("Magellan", "") === "[Magellan]");
+  check("whitespace-only report -> bare tag", A("Magellan", "   \n  ") === "[Magellan]");
+  check("leading blank lines -> prepend to original", A("Magellan", "\n\nbody") === "[Magellan]\n\n\nbody");
+  check("generation-suffixed nickname", A("Magellan·2", "body") === "[Magellan·2]\nbody");
+  check("bracketed but not tag-only first line -> prepend", A("Magellan", "[INFO] x\ny") === "[Magellan]\n[INFO] x\ny");
+  check("idempotent on a repaired report", A("Magellan", A("Magellan", "[Cook]\nbody")) === "[Magellan]\nbody");
+}
+
+// --------------------------------------------------------------------------- //
 section("Config (D5): search order");
 {
   const d = tmp();

@@ -490,6 +490,25 @@ except PoolExhaustedError:
     check("avoid participates in the exhaustion check", True)
 
 # --------------------------------------------------------------------------- #
+section("Attribution: attribute() verifies/repairs the [Nickname] prefix")
+check("correct tag -> unchanged (idempotent)",
+      ns.attribute("Magellan", "[Magellan]\nbody") == "[Magellan]\nbody")
+check("wrong/other bracket tag -> replaced",
+      ns.attribute("Magellan", "[Cook]\nbody") == "[Magellan]\nbody")
+check("no tag -> prepended",
+      ns.attribute("Magellan", "body") == "[Magellan]\nbody")
+check("empty report -> bare tag", ns.attribute("Magellan", "") == "[Magellan]")
+check("whitespace-only report -> bare tag", ns.attribute("Magellan", "   \n  ") == "[Magellan]")
+check("leading blank lines -> prepend to original",
+      ns.attribute("Magellan", "\n\nbody") == "[Magellan]\n\n\nbody")
+check("generation-suffixed nickname",
+      ns.attribute("Magellan·2", "body") == "[Magellan·2]\nbody")
+check("bracketed but not tag-only first line -> prepend (not clobbered)",
+      ns.attribute("Magellan", "[INFO] x\ny") == "[Magellan]\n[INFO] x\ny")
+check("idempotent on a repaired report",
+      ns.attribute("Magellan", ns.attribute("Magellan", "[Cook]\nbody")) == "[Magellan]\nbody")
+
+# --------------------------------------------------------------------------- #
 section("Config (D5): search order")
 with tempfile.TemporaryDirectory() as d:
     explicit_p = os.path.join(d, "explicit.json")
