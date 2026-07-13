@@ -7,6 +7,12 @@ grown into a full identity layer.
 [![CI](https://github.com/Bobby-cell-commits/named-subagents/actions/workflows/ci.yml/badge.svg)](https://github.com/Bobby-cell-commits/named-subagents/actions/workflows/ci.yml)
 ![python](https://img.shields.io/badge/python-3.8%2B-blue) ![node](https://img.shields.io/badge/node-%E2%89%A516-brightgreen) ![deps](https://img.shields.io/badge/runtime%20deps-0-success)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Bobby-cell-commits/named-subagents/master/assets/demo.gif"
+       alt="named-subagents demo — themed, non-repeating nicknames for parallel Claude Code subagents"
+       width="760">
+</p>
+
 When you fan out several Claude Code subagents, parallel instances of one role
 are three identical `Explore` labels. Codex instead gives every spawned instance
 a distinct human-legible **nickname**. Claude Code has no such field — requested

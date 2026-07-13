@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
-## [0.4.0] — 2026-07-12
+## [0.4.0] — 2026-07-13
 
 Install-once **auto-namer**. The whole point of the package — themed, non-repeating
 subagent nicknames — now happens automatically on every Claude Code fan-out, with
