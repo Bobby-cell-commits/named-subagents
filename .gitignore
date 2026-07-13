@@ -10,3 +10,8 @@ dist/
 *.egg-info/
 node_modules/
 *.tgz
+
+# lint / coverage tool caches (CI-only tools; never committed)
+.ruff_cache/
+.coverage
+.coverage.*

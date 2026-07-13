@@ -3,6 +3,18 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [Unreleased]
+
+### Changed (internal — no package-content change)
+- **Repo layout tidied:** Python suites moved to `tests/`, the runnable demo to
+  `examples/`, and `RELEASING.md` / `COMMUNITY.md` to `docs/`. The installable
+  artifacts are unchanged — the **wheel** (`pip install`) and the **npm tarball**
+  still contain only the package, exactly as before. (The PyPI **sdist** is a full
+  source archive and reflects the new layout, as it did the old.)
+- **CI hygiene:** added a ruff lint gate and a library-core coverage gate, and
+  bumped the GitHub Actions (`checkout`, `setup-python`, `setup-node`) to current
+  majors to clear the Node-runtime deprecation warnings.
+
 ## [0.4.1] — 2026-07-13
 
 Release-pipeline validation. Exercises the v0.4.0 migration of npm publishing to

@@ -8,7 +8,11 @@ iterations — the core Codex-nickname property, ported to Claude Code.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+
+# Repo root importable when run as `python examples/demo.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from named_subagents import Registry, Ledger, plan_fanout
 

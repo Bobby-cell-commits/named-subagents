@@ -8,9 +8,9 @@ The bar for adding a dependency (either port) is effectively "no".
 None. Clone and run:
 
 ```bash
-python3 test_named_subagents.py     # Python suite (stdlib only, no pytest)
-node js/test_named_subagents.mjs    # JS mirror suite (Node ≥ 16)
-scripts/parity_check.sh             # cross-language parity (needs both runtimes)
+python3 tests/test_named_subagents.py   # Python suite (stdlib only, no pytest)
+node js/test_named_subagents.mjs        # JS mirror suite (Node ≥ 16)
+scripts/parity_check.sh                 # cross-language parity (needs both runtimes)
 python3 -m named_subagents.cli doctor   # self-checks
 ```
 

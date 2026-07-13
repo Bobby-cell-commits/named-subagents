@@ -9,7 +9,7 @@ name: Release
 #   * npm   — Trusted Publishing (OIDC). The npm CLI (>= 11.5.1) exchanges the
 #     GitHub OIDC token for a short-lived credential and generates provenance
 #     automatically (no NODE_AUTH_TOKEN, no `--provenance` flag). One-time
-#     "trusted publisher" config on npmjs.com (see RELEASING.md).
+#     "trusted publisher" config on npmjs.com (see docs/RELEASING.md).
 #
 # A `verify` gate runs BEFORE either publish: it re-runs the full test matrix,
 # runs `doctor` (which cross-validates the four in-repo version strings), and
@@ -30,11 +30,11 @@ jobs:
     name: Verify (tests + tag/version match)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
 
@@ -50,7 +50,7 @@ jobs:
           echo "Tag ${GITHUB_REF_NAME} matches declared version ${PY_VERSION}."
 
       - name: Python tests
-        run: python test_named_subagents.py
+        run: python tests/test_named_subagents.py
 
       - name: Doctor (cross-validates the four version strings + registry/ledger/parity)
         run: |
@@ -71,8 +71,8 @@ jobs:
       id-token: write # OIDC — the whole point of Trusted Publishing; no token stored
       contents: read # a job-level permissions block REPLACES defaults; checkout needs this
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Build sdist + wheel
@@ -82,7 +82,7 @@ jobs:
       - name: Publish to PyPI
         # No `password:` input — the action exchanges the GitHub OIDC token
         # for a short-lived PyPI credential. Configure the trusted publisher
-        # on pypi.org first (RELEASING.md), or the first run fails closed.
+        # on pypi.org first (docs/RELEASING.md), or the first run fails closed.
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # Idempotent re-runs: don't fail if this version is already on PyPI
@@ -97,8 +97,8 @@ jobs:
       id-token: write # OIDC — trusted publishing exchanges this for a short-lived credential; also drives provenance
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
           # NO registry-url: it makes setup-node write an .npmrc with a placeholder
@@ -114,7 +114,7 @@ jobs:
         # Trusted publishing: NO NODE_AUTH_TOKEN — the npm CLI exchanges the GitHub
         # OIDC token for a short-lived credential and generates provenance
         # automatically (no `--provenance` flag). Configure the trusted publisher on
-        # npmjs.com FIRST (RELEASING.md) or this fails closed. `prepack` copies the
+        # npmjs.com FIRST (docs/RELEASING.md) or this fails closed. `prepack` copies the
         # canonical registry.json + README into js/ before packing.
         working-directory: js
         run: npm publish --access public
@@ -126,7 +126,7 @@ jobs:
     permissions:
       contents: write # to create the release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Publish release notes from CHANGELOG
         env:
           GH_TOKEN: ${{ github.token }}

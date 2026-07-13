@@ -324,7 +324,7 @@ guaranteed themes pass `category=` or `role=` explicitly.
 
 ## Where this sits (community landscape)
 
-[`COMMUNITY.md`](COMMUNITY.md) surveys 11 community Claude Code agent projects.
+[`COMMUNITY.md`](docs/COMMUNITY.md) surveys 11 community Claude Code agent projects.
 The whole ecosystem names agents by **functional role**; none provide
 per-instance nicknames, task-themed names, or a non-repeating ledger. This is
 an **identity layer that composes _under_** orchestrators like `claude-swarm`,
@@ -334,15 +334,15 @@ an **identity layer that composes _under_** orchestrators like `claude-swarm`,
 ## Tests
 
 ```bash
-python3 test_named_subagents.py     # 266 checks incl. state-machine campaigns
-node js/test_named_subagents.mjs    # 279 checks (mirror suite)
-python3 test_hook.py                # auto-namer: fail-open, concurrency, install merge-safety
-node js/test_hook.mjs               # auto-namer mirror suite
-scripts/parity_check.sh             # cross-language gate (both runtimes, incl. hook run)
+python3 tests/test_named_subagents.py     # 266 checks incl. state-machine campaigns
+node js/test_named_subagents.mjs          # 279 checks (mirror suite)
+python3 tests/test_hook.py                # auto-namer: fail-open, concurrency, install merge-safety
+node js/test_hook.mjs                     # auto-namer mirror suite
+scripts/parity_check.sh                   # cross-language gate (both runtimes, incl. hook run)
 ```
 
 CI runs Python 3.8/3.12/3.13, Node 18/20/22, install smokes for both package
-managers, and the parity gate.
+managers, the parity gate, plus ruff lint and library-core coverage.
 
 ## Files
 
@@ -350,10 +350,12 @@ managers, and the parity gate.
 |---|---|
 | `named_subagents/` | Python package (reference impl) + **canonical `registry.json`** |
 | `js/` | JS/ESM npm package (twin port; `js/registry.json` is generated at pack time) |
+| `tests/` | Python suites (unit, auto-namer hook, resolution eval) |
+| `examples/` | runnable demo (`demo.py`) |
 | `skill/named-fanout/` | Claude Code skill wrapping the CLI |
-| `COMMUNITY.md` | ecosystem survey |
+| `docs/COMMUNITY.md` | ecosystem survey |
 | `SECURITY.md` / `CONTRIBUTING.md` | threat model / parity discipline |
-| `RELEASING.md` | release process |
+| `docs/RELEASING.md` | release process |
 
 ## Contributing
 

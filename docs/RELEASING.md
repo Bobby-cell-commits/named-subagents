@@ -73,7 +73,7 @@ The npm job needs the npm CLI **≥ 11.5.1** (the workflow upgrades it). One-tim
    `github-release` job publishes this section verbatim as the release notes.
 3. Verify locally:
    ```bash
-   python test_named_subagents.py && node js/test_named_subagents.mjs
+   python tests/test_named_subagents.py && node js/test_named_subagents.mjs
    bash scripts/parity_check.sh
    pip install -e . && named-subagents doctor    # doctor cross-checks the 4 versions
    ```
