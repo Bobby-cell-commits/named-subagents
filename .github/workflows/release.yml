@@ -101,7 +101,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          registry-url: "https://registry.npmjs.org"
+          # NO registry-url: it makes setup-node write an .npmrc with a placeholder
+          # `_authToken` (+ always-auth), so npm attempts token auth and never falls
+          # back to OIDC -> `E404 ... you do not have permission` on publish. Without
+          # it, npm uses the default registry and the OIDC trusted-publishing flow.
       - name: Use a trusted-publishing-capable npm (>= 11.5.1)
         # node 20 ships npm 10.x, which predates OIDC trusted publishing. Pin to the
         # 11.x line: it supports trusted publishing AND runs on node 20 (npm@latest
