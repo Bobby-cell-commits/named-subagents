@@ -103,9 +103,10 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
       - name: Use a trusted-publishing-capable npm (>= 11.5.1)
-        # node 20 ships npm 10.x, which predates OIDC trusted publishing. Upgrade
-        # explicitly so this doesn't silently regress if the bundled npm changes.
-        run: npm install -g npm@latest
+        # node 20 ships npm 10.x, which predates OIDC trusted publishing. Pin to the
+        # 11.x line: it supports trusted publishing AND runs on node 20 (npm@latest
+        # is 12.x, which requires node >= 22.22.2 -> EBADENGINE on this runner).
+        run: npm install -g npm@11
       - name: Publish
         # Trusted publishing: NO NODE_AUTH_TOKEN — the npm CLI exchanges the GitHub
         # OIDC token for a short-lived credential and generates provenance
