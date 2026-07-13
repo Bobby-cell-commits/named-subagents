@@ -28,6 +28,17 @@ no per-call CLI invocation. The public 0.3 API is unchanged and additive.
   `~/.local/state/named-subagents/hook-ledger.json`), `NAMED_SUBAGENTS_HOOK_DISABLE`
   (kill switch — passthrough without uninstalling), `NAMED_SUBAGENTS_HOOK_BIO`
   (include the nickname's bio in the preamble).
+- **`doctor` now checks the auto-namer** (both ports): reports whether the hook is
+  registered in `settings.json`, and runs a live self-test (`hook run` against a
+  throwaway ledger) so *"is it working?"* is one command. `doctor` never writes real
+  state.
+- **`init` command** (both ports): scaffolds a starter config
+  (`~/.config/named-subagents/config.json` by default, `--cwd` for the project-local
+  file, `--path` for anywhere) with example pins + a custom category + a pool extend.
+  The template is validated on write and refuses to overwrite without `--force`.
+- **`assign --format table`** (both ports): a human-readable aligned table
+  (agent · subagent_type · theme) alongside the existing `agent`/`labels`/`workflow`/
+  `swarm` shapes. Code-point padding keeps it byte-identical across ports.
 
 ### Robustness
 - **Fail-open is the contract**: `hook run` never exits non-zero and never blocks a

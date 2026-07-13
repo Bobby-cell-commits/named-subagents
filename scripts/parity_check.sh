@@ -78,4 +78,16 @@ printf '%s' "$HEV" | NAMED_SUBAGENTS_LEDGER="$TMP/hook-js.json" $JS hook run > "
 diff -u "$TMP/py-hook.json" "$TMP/js-hook.json" > /dev/null || fail "hook run mutation differs"
 echo "  [PASS] hook run mutation identical (nickname + description + preamble)"
 
+# 8 — assign --format table (human-readable; code-point padding must match)
+$PY assign --role explore --task "map the auth module" --task "map the billing module" --format table > "$TMP/py-table.txt"
+$JS assign --role explore --task "map the auth module" --task "map the billing module" --format table > "$TMP/js-table.txt"
+diff -u "$TMP/py-table.txt" "$TMP/js-table.txt" > /dev/null || fail "assign --format table differs"
+echo "  [PASS] assign --format table identical"
+
+# 9 — init scaffolds a byte-identical starter config across ports
+$PY init --path "$TMP/py-init.json" > /dev/null
+$JS init --path "$TMP/js-init.json" > /dev/null
+diff -u "$TMP/py-init.json" "$TMP/js-init.json" > /dev/null || fail "init config differs"
+echo "  [PASS] init scaffolds an identical config"
+
 echo "PARITY OK"

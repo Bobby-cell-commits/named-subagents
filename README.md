@@ -207,9 +207,11 @@ named-subagents resolve  --task "audit auth" --explain         # ...+ why (keywo
 named-subagents allocate --category reflect --count 3
 named-subagents assign   --role Explore --task "map the router" \
                          --count 4 --ledger .ledger.json       # Agent payloads
+named-subagents assign   --role Explore --task "map the router" --count 3 --format table  # human-readable
+named-subagents init                            # scaffold a starter config (--cwd / --path / --force)
 named-subagents bio Heimdall                    # who is this figure?
 named-subagents stats  --ledger .ledger.json    # pool burn-down, generations
-named-subagents doctor                          # self-checks (see below)
+named-subagents doctor                          # self-checks — incl. a live auto-namer self-test
 named-subagents hook install                    # auto-name every fan-out (see "Auto-namer" above)
 named-subagents hook status                     # is the hook installed? ledger usage
 ```
@@ -278,6 +280,7 @@ level, enforced at draw time.
 named-subagents assign --task "…" --count 4 --format workflow   # Workflow snippet
 named-subagents assign --task "…" --count 4 --format swarm      # swarm YAML fragment
 named-subagents assign --task "…" --count 4 --format labels     # generic JSON
+named-subagents assign --task "…" --count 4 --format table      # human-readable table
 ```
 
 ### Doctor (self-awareness)

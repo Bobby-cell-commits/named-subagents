@@ -311,6 +311,43 @@ with tempfile.TemporaryDirectory() as d:
           open(sp).read() == "{ this is not valid json ")
 
 # --------------------------------------------------------------------------- #
+def run_cli(*argv, env_extra=None):
+    env = os.environ.copy()
+    env.pop("NAMED_SUBAGENTS_CONFIG", None)
+    env["NAMED_SUBAGENTS_LEDGER"] = os.path.join(_SAFE_LEDGER_DIR, "safe-led.json")
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run([PY, "-m", "named_subagents.cli", *argv],
+                          capture_output=True, text=True, cwd=ROOT, env=env, timeout=90)
+
+
+section("doctor knows the auto-namer (item 1)")
+r = run_cli("doctor")
+check("doctor exits 0 when clean", r.returncode == 0, r.stderr[:200])
+check("doctor reports [PASS] hook-selftest", "[PASS] hook-selftest" in r.stdout, r.stdout[-400:])
+check("doctor reports hook-install status", "hook-install" in r.stdout)
+
+section("init scaffolds a valid, usable config (item 10)")
+with tempfile.TemporaryDirectory() as d:
+    cfg = os.path.join(d, "config.json")
+    r = run_cli("init", "--path", cfg)
+    check("init exits 0 + writes the file", r.returncode == 0 and os.path.exists(cfg), r.stderr[:200])
+    check("init writes valid JSON", isinstance(json.load(open(cfg)), dict))
+    r = run_cli("allocate", "--category", "starships", "--count", "2", "--config", cfg)
+    check("scaffolded config is usable (allocate from the custom category)",
+          r.returncode == 0 and len(r.stdout.split()) == 2, r.stderr[:200])
+    r = run_cli("init", "--path", cfg)
+    check("init refuses overwrite without --force", r.returncode != 0)
+    r = run_cli("init", "--path", cfg, "--force")
+    check("init --force overwrites", r.returncode == 0, r.stderr[:200])
+
+section("assign --format table (item 10)")
+r = run_cli("assign", "--role", "Explore", "--task", "map the router", "--count", "3", "--format", "table")
+check("assign --format table exits 0", r.returncode == 0, r.stderr[:200])
+check("table has the header + a themed nickname row",
+      "subagent_type" in r.stdout and "Explore" in r.stdout, r.stdout[:200])
+
+# --------------------------------------------------------------------------- #
 if failures:
     print(f"\nRESULT: {len(failures)} FAILED -> {failures}")
     sys.exit(1)
