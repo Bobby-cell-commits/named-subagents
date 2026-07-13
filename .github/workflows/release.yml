@@ -2,15 +2,14 @@ name: Release
 
 # Publish to PyPI and npm when a version tag (`vX.Y.Z`) is pushed.
 #
-# Supply-chain posture (on-brand for a security-forward tool):
-#   * PyPI  — Trusted Publishing (OIDC). No stored API token; the registry
-#     verifies a short-lived GitHub OIDC identity instead. Requires a one-time
-#     "trusted publisher" config on pypi.org (see RELEASING.md).
-#   * npm   — `--provenance`. Generates a signed Sigstore attestation binding
-#     the published tarball to this workflow + commit. Uses NODE_AUTH_TOKEN
-#     (an npm automation token) as the documented auth path; npm's own
-#     token-free OIDC trusted publishing is documented as an upgrade in
-#     RELEASING.md.
+# Supply-chain posture (on-brand for a security-forward tool): BOTH registries
+# use OIDC Trusted Publishing — no stored API token on either side.
+#   * PyPI  — Trusted Publishing (OIDC). The registry verifies a short-lived
+#     GitHub OIDC identity. One-time "trusted publisher" config on pypi.org.
+#   * npm   — Trusted Publishing (OIDC). The npm CLI (>= 11.5.1) exchanges the
+#     GitHub OIDC token for a short-lived credential and generates provenance
+#     automatically (no NODE_AUTH_TOKEN, no `--provenance` flag). One-time
+#     "trusted publisher" config on npmjs.com (see RELEASING.md).
 #
 # A `verify` gate runs BEFORE either publish: it re-runs the full test matrix,
 # runs `doctor` (which cross-validates the four in-repo version strings), and
@@ -91,11 +90,11 @@ jobs:
           skip-existing: true
 
   npm:
-    name: Publish to npm (with provenance)
+    name: Publish to npm (trusted publishing)
     needs: verify
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # required for `--provenance` (Sigstore attestation via GitHub OIDC)
+      id-token: write # OIDC — trusted publishing exchanges this for a short-lived credential; also drives provenance
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -103,14 +102,18 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - name: Use a trusted-publishing-capable npm (>= 11.5.1)
+        # node 20 ships npm 10.x, which predates OIDC trusted publishing. Upgrade
+        # explicitly so this doesn't silently regress if the bundled npm changes.
+        run: npm install -g npm@latest
       - name: Publish
-        # `npm publish` runs the `prepack` script first, which copies the
-        # canonical registry.json + README.md into js/ (see js/package.json).
-        # `--access public` is needed for the first publish of this name.
+        # Trusted publishing: NO NODE_AUTH_TOKEN — the npm CLI exchanges the GitHub
+        # OIDC token for a short-lived credential and generates provenance
+        # automatically (no `--provenance` flag). Configure the trusted publisher on
+        # npmjs.com FIRST (RELEASING.md) or this fails closed. `prepack` copies the
+        # canonical registry.json + README into js/ before packing.
         working-directory: js
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
 
   github-release:
     name: Create GitHub Release
