@@ -565,33 +565,44 @@ function doctorChecks(opts) {
   // 9. auto-namer hook — install status (informational) + a live self-test
   const sp = settingsPath(opts);
   const { data: sdata } = readSettings(sp);
+  const sh = isObj(sdata.hooks) ? sdata.hooks : {};
   let hooked = false;
-  for (const _ of iterOurHooks((isObj(sdata.hooks) && sdata.hooks.PreToolUse) || [])) hooked = true;
-  add("INFO", "hook-install",
-    hooked ? `registered in ${sp}`
-      : `not installed (run \`named-subagents hook install\` to enable auto-naming)`);
+  for (const _ of iterOurHooks(sh.SubagentStart || [])) hooked = true;
+  let legacy = false;
+  for (const _ of iterOurHooks(sh.PreToolUse || [])) legacy = true;
+  if (hooked) {
+    add("INFO", "hook-install",
+      `registered (SubagentStart) in ${sp}`
+      + (legacy ? "  ⚠ legacy PreToolUse entry also present — re-run `hook install` to migrate" : ""));
+  } else if (legacy) {
+    add("INFO", "hook-install",
+      `⚠ only a legacy PreToolUse entry in ${sp} (clobber-prone) — re-run \`hook install\` to migrate to SubagentStart`);
+  } else {
+    add("INFO", "hook-install",
+      "not installed (run `named-subagents hook install` to enable auto-naming)");
+  }
   if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) {
     // Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
     add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE");
   } else {
     try {
       // Self-test against a THROWAWAY ledger so doctor never writes real state.
+      // This exercises the hook's OUTPUT shape, NOT Claude Code's application of it
+      // — end-to-end additionalContext delivery is verified live in the suite.
       const hd = mkdtempSync(join(tmpdir(), "ns-doctor-"));
       let out;
       try {
-        out = hookMutate(
-          { tool_name: "Agent", tool_input: { description: "map auth", prompt: "go", subagent_type: "Explore" } },
+        out = hookSubagentStart(
+          { hook_event_name: "SubagentStart", agent_type: "Explore" },
           join(hd, "led.json"));
       } finally {
         rmSync(hd, { recursive: true, force: true });
       }
-      const ui = (out && out.updatedInput) || {};
-      const ok = (ui.description || "").endsWith("map auth")
-        && ui.description !== "map auth"
-        && (ui.prompt || "").includes(PERSONA_SIG);
+      const ac = (out && out.additionalContext) || "";
+      const ok = !!out && out.hookEventName === "SubagentStart" && ac.includes(PERSONA_SIG);
       add(ok ? "PASS" : "FAIL", "hook-selftest",
-        ok ? "`hook run` produces a valid nicknamed dispatch"
-          : `unexpected mutation: ${JSON.stringify(out)}`);
+        ok ? "`hook run` emits a valid SubagentStart nickname context"
+          : `unexpected output: ${JSON.stringify(out)}`);
     } catch (e) {
       add("FAIL", "hook-selftest", `${e.name}: ${e.message}`);
     }
@@ -764,13 +775,50 @@ function hookMutate(event, ledgerPath = null) {
   return { hookEventName: "PreToolUse", updatedInput: updated };
 }
 
+/** Map a SubagentStart event -> the hookSpecificOutput object to emit, or null
+ * to pass through. This is the PRIMARY auto-namer path (v0.4.2): it delivers the
+ * nickname via `additionalContext`, which is ADDITIVE and reaches the subagent's
+ * own context — so it is immune to the multi-hook `updatedInput` clobber that
+ * silently drops the Agent-tool PreToolUse path (claude-code#15897 / #39814).
+ * SubagentStart carries only `agent_type` (no task/description), so theming is
+ * ROLE-based. `ledgerPath` overrides the default (doctor passes a temp path). */
+function hookSubagentStart(event, ledgerPath = null) {
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
+  if (!isObj(event)) return null;
+  const agentType = typeof event.agent_type === "string" ? event.agent_type : "";
+
+  // Never auto-load ./.named-subagents.json — the hook runs in arbitrary
+  // (possibly untrusted) dirs and its output lands in the subagent's context.
+  const { registry: reg } = loadWithConfig(null, null, false);
+  const cat = resolveCategory(reg, { role: agentType || null });
+
+  const lp = ledgerPath !== null ? ledgerPath : hookLedgerPath();
+  if (lp) mkdirSync(dirname(lp), { recursive: true });
+  const nickname = withLedgerLock(lp, () => {
+    const led = new Ledger(lp);           // loads fresh state under the lock
+    const n = allocate(cat, 1, reg, { ledger: led })[0];
+    led.save();
+    return n;
+  });
+
+  const theme = reg.theme(cat);
+  const bio = process.env.NAMED_SUBAGENTS_HOOK_BIO ? reg.bio(cat, stripGen(nickname)) : null;
+  const context = personaPreamble(nickname, theme, bio, false);
+  return { hookEventName: "SubagentStart", additionalContext: context };
+}
+
 function cmdHookRun() {
-  // FAIL-OPEN: read the event on stdin, emit updatedInput, ALWAYS exit 0. Any
-  // error -> emit nothing -> the dispatch runs with its original input. A broken
-  // namer must never break a fan-out, and must never exit non-zero (2 would block).
+  // FAIL-OPEN: read the event on stdin, emit the hookSpecificOutput, ALWAYS exit
+  // 0. Routes by `hook_event_name`: SubagentStart -> additionalContext (the
+  // primary, clobber-proof path); anything else -> hookMutate (kept so a lingering
+  // legacy PreToolUse registration still functions — new installs register only
+  // SubagentStart). Any error -> emit nothing -> the dispatch runs with its
+  // original input. A broken namer must never break a fan-out, and must never exit
+  // non-zero (2 would block).
   try {
     const event = JSON.parse(readFileSync(0, "utf8"));
-    const out = hookMutate(event);
+    const ev = isObj(event) ? event.hook_event_name : null;
+    const out = ev === "SubagentStart" ? hookSubagentStart(event) : hookMutate(event);
     if (out !== null) process.stdout.write(pyDumps({ hookSpecificOutput: out }));
   } catch { /* fail-open by design */ }
   return 0;
@@ -829,6 +877,25 @@ function* iterOurHooks(pre) {
   }
 }
 
+/** Strip our marker'd hooks from a hooks-array (a `hooks.<event>` list),
+ * preserving every unrelated block. Returns [newEntries, removedCount]. A
+ * non-array input passes straight through (nothing to prune). */
+function pruneOurHooks(entries) {
+  if (!Array.isArray(entries)) return [entries, 0];
+  let removed = 0;
+  const next = [];
+  for (const m of entries) {
+    if (!isObj(m) || !Array.isArray(m.hooks)) { next.push(m); continue; }   // not a hooks block
+    const hs = m.hooks;
+    const kept = hs.filter((h) => !(isObj(h) && (h.command || "").includes(HOOK_MARKER)));
+    if (kept.length === hs.length) { next.push(m); continue; }              // nothing ours -> untouched
+    removed += hs.length - kept.length;
+    if (kept.length) next.push({ ...m, hooks: kept });                      // keep block with survivors
+    // else: the block held ONLY our hook(s) -> drop the now-empty matcher block
+  }
+  return [next, removed];
+}
+
 function cmdHookInstall(opts) {
   const sp = settingsPath(opts);
   const { data, error } = readSettings(sp);
@@ -839,21 +906,28 @@ function cmdHookInstall(opts) {
   }
   if (data.hooks === undefined) data.hooks = {};
   if (!isObj(data.hooks)) { console.error(`error: ${sp} has a non-object 'hooks'; refusing to modify.`); return 1; }
-  if (data.hooks.PreToolUse === undefined) data.hooks.PreToolUse = [];
-  if (!Array.isArray(data.hooks.PreToolUse)) {
-    console.error(`error: ${sp} has a non-list 'hooks.PreToolUse'; refusing to modify.`); return 1;
+  if (data.hooks.SubagentStart === undefined) data.hooks.SubagentStart = [];
+  if (!Array.isArray(data.hooks.SubagentStart)) {
+    console.error(`error: ${sp} has a non-list 'hooks.SubagentStart'; refusing to modify.`); return 1;
   }
   const existed = existsSync(sp);
   const cmd = hookCommand();
-  for (const [, h] of iterOurHooks(data.hooks.PreToolUse)) {
+  // v0.4.2 migration: strip any legacy PreToolUse auto-namer entry — that path is
+  // clobber-prone (claude-code#15897/#39814); SubagentStart + additionalContext
+  // replaces it. A clean install prunes nothing.
+  const [preNew, preRemoved] = pruneOurHooks(data.hooks.PreToolUse);
+  if (preRemoved) data.hooks.PreToolUse = preNew;
+  const migrated = preRemoved ? " (migrated the legacy PreToolUse entry to SubagentStart)" : "";
+  for (const [, h] of iterOurHooks(data.hooks.SubagentStart)) {
     h.command = cmd;                    // refresh (e.g. new interpreter path); idempotent
     writeSettings(sp, data, existed);
-    console.log(`auto-namer hook already installed — refreshed the command in ${sp}`);
+    console.log(`auto-namer hook already installed — refreshed the command in ${sp}${migrated}`);
     return 0;
   }
-  data.hooks.PreToolUse.push({ matcher: "Agent|Task", hooks: [{ type: "command", command: cmd }] });
+  data.hooks.SubagentStart.push({ matcher: "*", hooks: [{ type: "command", command: cmd }] });
   writeSettings(sp, data, existed);
-  console.log(`installed the auto-namer hook in ${sp}\n  matcher: Agent|Task\n  command: ${cmd}\n`
+  const migLine = preRemoved ? "\n  migrated the legacy PreToolUse entry -> SubagentStart" : "";
+  console.log(`installed the auto-namer hook in ${sp}\n  event: SubagentStart   matcher: *\n  command: ${cmd}${migLine}\n`
     + "New Claude Code sessions will nickname every subagent dispatch.\n"
     + "Verify with `named-subagents hook status`.");
   return 0;
@@ -864,20 +938,14 @@ function cmdHookUninstall(opts) {
   if (!existsSync(sp)) { console.log(`nothing to remove: ${sp} does not exist`); return 0; }
   const { data, error } = readSettings(sp);
   if (error) { console.error(`error: ${sp} is not valid JSON (${error}); refusing to modify.`); return 1; }
-  const pre = isObj(data.hooks) ? data.hooks.PreToolUse : undefined;
-  if (!Array.isArray(pre)) { console.log(`no auto-namer hook found in ${sp}`); return 0; }
-  let removed = 0;
-  const newPre = [];
-  for (const m of pre) {
-    if (!isObj(m) || !Array.isArray(m.hooks)) { newPre.push(m); continue; }  // leave non-hooks blocks as-is
-    const hs = m.hooks;
-    const kept = hs.filter((h) => !(isObj(h) && (h.command || "").includes(HOOK_MARKER)));
-    if (kept.length === hs.length) { newPre.push(m); continue; }             // nothing ours -> untouched
-    removed += hs.length - kept.length;
-    if (kept.length) newPre.push({ ...m, hooks: kept });                     // else drop the emptied block
+  if (!isObj(data.hooks)) { console.log(`no auto-namer hook found in ${sp}`); return 0; }
+  // Remove our entry from BOTH events: SubagentStart (current) and PreToolUse (legacy).
+  let total = 0;
+  for (const ev of ["SubagentStart", "PreToolUse"]) {
+    const [newList, removed] = pruneOurHooks(data.hooks[ev]);
+    if (removed) { data.hooks[ev] = newList; total += removed; }
   }
-  if (removed) {
-    data.hooks.PreToolUse = newPre;
+  if (total) {
     writeSettings(sp, data, true);
     console.log(`removed the auto-namer hook from ${sp}`);
   } else {
@@ -891,8 +959,13 @@ function cmdHookStatus(opts) {
   const { data, error } = readSettings(sp);
   let installed = false;
   let cmd = null;
-  const pre = isObj(data.hooks) ? data.hooks.PreToolUse : [];
-  for (const [, h] of iterOurHooks(pre || [])) { installed = true; cmd = h.command; }
+  let legacy = false;
+  const hk = isObj(data.hooks) ? data.hooks : {};
+  for (const [, h] of iterOurHooks(hk.SubagentStart || [])) { installed = true; cmd = h.command; }
+  for (const [, h] of iterOurHooks(hk.PreToolUse || [])) {
+    legacy = true;                       // a pre-0.4.2 (clobber-prone) registration lingers
+    if (!installed) cmd = h.command;
+  }
   const lp = hookLedgerPath();
   const ledExists = existsSync(lp);
   let allocated = null;
@@ -906,13 +979,18 @@ function cmdHookStatus(opts) {
   if (opts.json) {
     console.log(pyDumps({
       settings_path: sp, settings_malformed: !!error, installed, command: cmd,
-      ledger_path: lp, ledger_exists: ledExists, total_allocated: allocated, disabled,
+      ledger_path: lp, ledger_exists: ledExists, total_allocated: allocated,
+      disabled, legacy_pretooluse: legacy,
     }, { indent: 2 }));
     return 0;
   }
   console.log(`settings:   ${sp}${error ? "  ⚠ MALFORMED JSON" : ""}`);
-  console.log(`installed:  ${installed ? "yes" : "no"}`);
+  console.log(`installed:  ${installed ? "yes" : "no"}${installed ? "  (event: SubagentStart)" : ""}`);
   if (cmd) console.log(`  command:  ${cmd}`);
+  if (legacy) {
+    console.log("  ⚠ legacy:  a pre-0.4.2 PreToolUse entry is still present (clobber-prone);"
+      + " re-run `hook install` to migrate it, or `hook uninstall` to clear it");
+  }
   console.log(`ledger:     ${lp}  (${ledExists ? "exists" : "not created yet"}`
     + (allocated !== null ? `, ${allocated} names allocated` : "") + ")");
   if (disabled) console.log("note:       NAMED_SUBAGENTS_HOOK_DISABLE is set — hook is a no-op in this env");

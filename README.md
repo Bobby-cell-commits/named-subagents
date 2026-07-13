@@ -62,33 +62,47 @@ show three identical `Explore` labels shows three distinct explorers, with zero
 code on your side.
 
 ```bash
-named-subagents hook install     # register the PreToolUse hook in ~/.claude/settings.json
+named-subagents hook install     # register the SubagentStart hook in ~/.claude/settings.json
 named-subagents hook status      # verify: installed? ledger path? names used so far
 ```
 
-That's the whole setup. **New** Claude Code sessions now rewrite each dispatch's
-task line to `🧭 Hudson: map the auth module` and prepend a persona preamble so
-parallel results come back attributed by nickname. Pause it any time with
+That's the whole setup. **New** Claude Code sessions now inject a role-themed
+identity block (e.g. *"You are **Hudson** (an explorers & navigators callsign),
+one of several parallel agents…"*) into every subagent's own context, so parallel
+results come back attributed by nickname. Pause it any time with
 `NAMED_SUBAGENTS_HOOK_DISABLE=1` (no uninstall needed), or remove it with
 `named-subagents hook uninstall`.
 
-**How it works.** A `PreToolUse` hook matched to the `Agent`/`Task` tool. On each
-dispatch it allocates a themed, non-repeating nickname (the same ledger +
-generation machinery as the CLI, flock-serialized so a parallel fan-out never
-collides on a name) and returns `hookSpecificOutput.updatedInput` that prefixes the
-`description` and preambles the `prompt`.
+**How it works.** A `SubagentStart` hook (matcher `*`). When a subagent starts, the
+hook allocates a themed, non-repeating nickname (the same ledger + generation
+machinery as the CLI, lock-serialized so a parallel fan-out never collides on a
+name) and returns `hookSpecificOutput.additionalContext` carrying the identity
+block, role-themed from the subagent's `agent_type`. `additionalContext` is
+**additive** — when several hooks fire, each one's context is appended and none
+clobbers the others — so the nickname reaches the subagent even alongside your own
+hooks.
 
-**Honest limits.** The nickname lands on the dispatch **description** (the task line
-your runner shows) — Claude Code has no per-instance display-name field, so the
-agent *type* label (`Explore`) is unchanged and the nickname rides alongside it. The
-`[Hudson]` self-tag in the agent's reply is best-effort (an agent may ignore the
-preamble); the deterministic attribution is the description, always applied. And
-`updatedInput` on the `Agent` tool, while validated on Claude Code 2.1.207, is
-undocumented — so the hook **fails open**: any error, or a future tool rename,
+**Why SubagentStart, not PreToolUse.** An earlier version rewrote the dispatch via a
+`PreToolUse` hook returning `updatedInput`. Claude Code **silently drops**
+`updatedInput` for the `Agent` tool when more than one PreToolUse hook runs
+([claude-code#15897](https://github.com/anthropics/claude-code/issues/15897),
+[#39814](https://github.com/anthropics/claude-code/issues/39814)) — so a user with
+other hooks got no nickname while the ledger still burned names. `additionalContext`
+is additive and reaches the subagent directly, so it is robust under multiple hooks.
+The legacy PreToolUse path is still handled by `hook run`, and `hook install`
+**migrates** any pre-0.4.2 registration to SubagentStart.
+
+**Honest limits.** Claude Code has no per-instance display-name field, so the *type*
+label (`Explore`) is unchanged and the nickname rides inside the subagent's context,
+not as a UI badge. Because `SubagentStart` carries only `agent_type` (no
+task/description), the hook themes by **role** — an `Explore`-role subagent gets an
+explorer, a `data`-role one a mathematician, etc. (the CLI keeps full task+role
+theming). The `[Hudson]` self-tag in the agent's reply is best-effort — an agent may
+ignore the preamble. The hook **fails open**: any error, or a future event rename,
 degrades to a normal un-named dispatch, never a broken one.
 
 **Safety.** `hook run` never exits non-zero (a broken namer must never break your
-fan-out), never changes your permission posture (it returns only `updatedInput`,
+fan-out), never changes your permission posture (it returns only `additionalContext`,
 never auto-allow), and never auto-loads the untrusted `./.named-subagents.json`.
 `install`/`uninstall` back up `settings.json`, refuse to touch malformed JSON, and
 only ever add or remove their own entry.
@@ -104,6 +118,19 @@ only ever add or remove their own entry.
 > one runtime's hook per machine — or, if you really want both, point them at
 > separate ledgers via `NAMED_SUBAGENTS_LEDGER`. Sharing one ledger across both
 > ports still fails open (worst case: a dispatch goes un-named), never corrupt.
+
+### Troubleshooting
+
+**Symptom: the ledger advances but subagents show no nickname.** You're on a
+pre-0.4.2 install that registered a `PreToolUse` hook returning `updatedInput` —
+and Claude Code **silently drops** that field for the `Agent` tool when another
+PreToolUse hook also runs
+([#15897](https://github.com/anthropics/claude-code/issues/15897) /
+[#39814](https://github.com/anthropics/claude-code/issues/39814)), so the name
+never reaches the subagent even though the ledger keeps burning names. **Fix:**
+upgrade to ≥ 0.4.2 and re-run `named-subagents hook install` — it migrates the
+legacy entry to a `SubagentStart` hook (additive `additionalContext`, immune to
+the clobber). `hook status` flags any lingering legacy entry with a `⚠ legacy` line.
 
 ### For Claude Code — read this and run it
 
@@ -122,12 +149,13 @@ this. It is safe: idempotent, backs up `settings.json`, and fails open.
 3. **Verify** it registered and actually runs:
    ```bash
    named-subagents hook status
-   printf '{"tool_name":"Agent","tool_input":{"description":"map auth","prompt":"go","subagent_type":"Explore"}}' \
+   printf '{"hook_event_name":"SubagentStart","agent_type":"Explore"}' \
      | named-subagents hook run
    ```
-   `status` must show `installed:  yes`. The `hook run` line must print JSON whose
-   `updatedInput.description` starts with an emoji + a nickname (e.g.
-   `🧭 Hudson: map auth`). If both hold, the install is working.
+   `status` must show `installed:  yes  (event: SubagentStart)`. The `hook run`
+   line must print JSON whose `hookSpecificOutput.additionalContext` contains a
+   nickname line (e.g. `You are **Hudson** (an explorers & navigators callsign)…`).
+   If both hold, the install is working.
 4. **Tell the user**: hooks load at session start, so the auto-namer takes effect in
    **new** Claude Code sessions — they should open a fresh session to see nicknamed
    fan-outs. To pause: `export NAMED_SUBAGENTS_HOOK_DISABLE=1`. To remove:

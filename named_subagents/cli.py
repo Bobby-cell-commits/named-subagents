@@ -411,30 +411,37 @@ def _doctor_checks(args):
     # 9. auto-namer hook — install status (informational) + a live self-test
     sp = _settings_path(args)
     sdata, _serr = _read_settings(sp)
-    _sh = sdata.get("hooks")   # guard a truthy non-dict `hooks` -> report, never crash
-    _pre = (_sh.get("PreToolUse") if isinstance(_sh, dict) else None) or []
-    hooked = next(_iter_our_hooks(_pre), None)
-    add("INFO", "hook-install",
-        f"registered in {sp}" if hooked
-        else "not installed (run `named-subagents hook install` to enable auto-naming)")
+    _sh = sdata.get("hooks")
+    _sh = _sh if isinstance(_sh, dict) else {}
+    hooked = next(_iter_our_hooks(_sh.get("SubagentStart") or []), None)
+    legacy = next(_iter_our_hooks(_sh.get("PreToolUse") or []), None)
+    if hooked:
+        add("INFO", "hook-install",
+            f"registered (SubagentStart) in {sp}"
+            + ("  ⚠ legacy PreToolUse entry also present — re-run `hook install` to migrate" if legacy else ""))
+    elif legacy:
+        add("INFO", "hook-install",
+            f"⚠ only a legacy PreToolUse entry in {sp} (clobber-prone) — re-run `hook install` to migrate to SubagentStart")
+    else:
+        add("INFO", "hook-install",
+            "not installed (run `named-subagents hook install` to enable auto-naming)")
     if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
         # Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
         add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE")
     else:
         try:
             # Self-test against a THROWAWAY ledger so doctor never writes real state.
+            # This exercises the hook's OUTPUT shape, NOT Claude Code's application of
+            # it — end-to-end additionalContext delivery is verified live in the suite.
             with tempfile.TemporaryDirectory() as _hd:
-                out = _hook_mutate(
-                    {"tool_name": "Agent",
-                     "tool_input": {"description": "map auth", "prompt": "go", "subagent_type": "Explore"}},
+                out = _hook_subagent_start(
+                    {"hook_event_name": "SubagentStart", "agent_type": "Explore"},
                     ledger_path=os.path.join(_hd, "led.json"))
-            ui = (out or {}).get("updatedInput", {})
-            ok = (ui.get("description", "").endswith("map auth")
-                  and ui.get("description") != "map auth"
-                  and _PERSONA_SIG in ui.get("prompt", ""))
+            ac = (out or {}).get("additionalContext", "")
+            ok = bool(out) and out.get("hookEventName") == "SubagentStart" and _PERSONA_SIG in ac
             add("PASS" if ok else "FAIL", "hook-selftest",
-                "`hook run` produces a valid nicknamed dispatch" if ok
-                else f"unexpected mutation: {out}")
+                "`hook run` emits a valid SubagentStart nickname context" if ok
+                else f"unexpected output: {out}")
         except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
             add("FAIL", "hook-selftest", f"{type(e).__name__}: {e}")
 
@@ -597,16 +604,54 @@ def _hook_mutate(event, ledger_path=None):
     return {"hookEventName": "PreToolUse", "updatedInput": updated}
 
 
+def _hook_subagent_start(event, ledger_path=None):
+    """Map a SubagentStart event -> the hookSpecificOutput dict to emit, or None to
+    pass through. This is the PRIMARY auto-namer path (v0.4.2): it delivers the
+    nickname via `additionalContext`, which is ADDITIVE and reaches the subagent's
+    own context — so it is immune to the multi-hook `updatedInput` clobber that
+    silently drops the Agent-tool PreToolUse path (claude-code#15897 / #39814).
+
+    SubagentStart carries only `agent_type` (no task/description), so theming is
+    ROLE-based. `ledger_path` overrides the default (doctor passes a temp path)."""
+    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
+        return None
+    if not isinstance(event, dict):
+        return None
+    agent_type = event.get("agent_type")
+    agent_type = agent_type if isinstance(agent_type, str) else ""
+
+    reg, _cfg = _hook_registry()
+    cat = resolve_category(reg, role=agent_type or None)
+
+    led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
+    if led.path:
+        os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
+    with led.lock(timeout=10):
+        nickname = allocate(cat, 1, reg, ledger=led)[0]
+        led.save()
+
+    theme = reg.theme(cat)
+    bio = reg.bio(cat, _strip_gen(nickname)) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
+    context = persona_preamble(nickname, theme, bio=bio, task_follows=False)
+    return {"hookEventName": "SubagentStart", "additionalContext": context}
+
+
 def cmd_hook_run(args=None):
-    """PreToolUse handler invoked by Claude Code. Reads the event JSON on stdin,
+    """Auto-namer handler invoked by Claude Code. Reads the event JSON on stdin,
     writes a hookSpecificOutput JSON on stdout, always exits 0.
 
+    Routes by `hook_event_name`: SubagentStart -> `additionalContext` (the primary,
+    clobber-proof path); anything else is treated as a PreToolUse dispatch and goes
+    through `_hook_mutate` (kept so a lingering legacy PreToolUse registration still
+    functions — new installs register only SubagentStart).
+
     FAIL-OPEN is the whole contract: any error is swallowed and nothing is written,
-    so the dispatch proceeds with its ORIGINAL input. A broken namer must never
-    break a fan-out, and it must never exit 2 (that would BLOCK the dispatch)."""
+    so the dispatch proceeds unchanged. A broken namer must never break a fan-out,
+    and it must never exit 2 (that would BLOCK the dispatch)."""
     try:
         event = json.loads(sys.stdin.read())
-        out = _hook_mutate(event)
+        ev = event.get("hook_event_name") if isinstance(event, dict) else None
+        out = _hook_subagent_start(event) if ev == "SubagentStart" else _hook_mutate(event)
         if out is not None:
             sys.stdout.write(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
     except Exception:  # noqa: BLE001 — fail-open by design
@@ -678,6 +723,30 @@ def _iter_our_hooks(pre):
                 yield m, h
 
 
+def _prune_our_hooks(entries):
+    """Strip our marker'd hooks from a hooks-array (a `hooks.<event>` list),
+    preserving every unrelated block. Returns (new_entries, removed_count).
+    A non-list input passes straight through (nothing to prune)."""
+    if not isinstance(entries, list):
+        return entries, 0
+    removed, new = 0, []
+    for m in entries:
+        if not isinstance(m, dict) or not isinstance(m.get("hooks"), list):
+            new.append(m)               # not a hooks block -> leave it exactly as-is
+            continue
+        hs = m["hooks"]
+        kept = [h for h in hs
+                if not (isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or ""))]
+        if len(kept) == len(hs):
+            new.append(m)               # nothing of ours here -> untouched
+            continue
+        removed += len(hs) - len(kept)
+        if kept:
+            new.append({**m, "hooks": kept})   # keep the block with its survivors
+        # else: the block held ONLY our hook(s) -> drop the now-empty matcher block
+    return new, removed
+
+
 def cmd_hook_install(args):
     sp = _settings_path(args)
     data, err = _read_settings(sp)
@@ -690,22 +759,29 @@ def cmd_hook_install(args):
     if not isinstance(hooks, dict):
         print(f"error: {sp} has a non-object 'hooks'; refusing to modify.", file=sys.stderr)
         return 1
-    pre = hooks.setdefault("PreToolUse", [])
-    if not isinstance(pre, list):
-        print(f"error: {sp} has a non-list 'hooks.PreToolUse'; refusing to modify.", file=sys.stderr)
+    ss = hooks.setdefault("SubagentStart", [])
+    if not isinstance(ss, list):
+        print(f"error: {sp} has a non-list 'hooks.SubagentStart'; refusing to modify.", file=sys.stderr)
         return 1
     existed = os.path.exists(sp)
     cmd = _hook_command()
-    for _m, h in _iter_our_hooks(pre):
+    # v0.4.2 migration: strip any legacy PreToolUse auto-namer entry — that path is
+    # clobber-prone (claude-code#15897/#39814); SubagentStart + additionalContext
+    # replaces it. A clean install prunes nothing.
+    pre_new, pre_removed = _prune_our_hooks(hooks.get("PreToolUse"))
+    if pre_removed:
+        hooks["PreToolUse"] = pre_new
+    migrated = " (migrated the legacy PreToolUse entry to SubagentStart)" if pre_removed else ""
+    for _m, h in _iter_our_hooks(ss):
         h["command"] = cmd              # refresh (e.g. new interpreter path); idempotent
         _write_settings(sp, data, backup=existed)
-        print(f"auto-namer hook already installed — refreshed the command in {sp}")
+        print(f"auto-namer hook already installed — refreshed the command in {sp}{migrated}")
         return 0
-    pre.append({"matcher": "Agent|Task",
-                "hooks": [{"type": "command", "command": cmd}]})
+    ss.append({"matcher": "*", "hooks": [{"type": "command", "command": cmd}]})
     _write_settings(sp, data, backup=existed)
+    mig_line = "\n  migrated the legacy PreToolUse entry -> SubagentStart" if pre_removed else ""
     print(f"installed the auto-namer hook in {sp}\n"
-          f"  matcher: Agent|Task\n  command: {cmd}\n"
+          f"  event: SubagentStart   matcher: *\n  command: {cmd}{mig_line}\n"
           f"New Claude Code sessions will nickname every subagent dispatch.\n"
           f"Verify with `named-subagents hook status`.")
     return 0
@@ -720,27 +796,18 @@ def cmd_hook_uninstall(args):
     if err:
         print(f"error: {sp} is not valid JSON ({err}); refusing to modify.", file=sys.stderr)
         return 1
-    pre = (data.get("hooks") or {}).get("PreToolUse")
-    if not isinstance(pre, list):
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
         print(f"no auto-namer hook found in {sp}")
         return 0
-    removed, new_pre = 0, []
-    for m in pre:
-        if not isinstance(m, dict) or not isinstance(m.get("hooks"), list):
-            new_pre.append(m)           # not a hooks block -> leave it exactly as-is
-            continue
-        hs = m["hooks"]
-        kept = [h for h in hs
-                if not (isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or ""))]
-        if len(kept) == len(hs):
-            new_pre.append(m)           # nothing of ours here -> untouched
-            continue
-        removed += len(hs) - len(kept)
-        if kept:
-            new_pre.append({**m, "hooks": kept})   # keep the block with its survivors
-        # else: the block held ONLY our hook(s) -> drop the now-empty matcher block
-    if removed:
-        data["hooks"]["PreToolUse"] = new_pre
+    # Remove our entry from BOTH events: SubagentStart (current) and PreToolUse (legacy).
+    total = 0
+    for ev in ("SubagentStart", "PreToolUse"):
+        new_list, removed = _prune_our_hooks(hooks.get(ev))
+        if removed:
+            hooks[ev] = new_list
+            total += removed
+    if total:
         _write_settings(sp, data, backup=True)
         print(f"removed the auto-namer hook from {sp}")
     else:
@@ -751,9 +818,14 @@ def cmd_hook_uninstall(args):
 def cmd_hook_status(args):
     sp = _settings_path(args)
     data, err = _read_settings(sp)
-    installed, cmd = False, None
-    for _m, h in _iter_our_hooks((data.get("hooks") or {}).get("PreToolUse") or []):
+    installed, cmd, legacy = False, None, False
+    _hk = data.get("hooks") or {}
+    for _m, h in _iter_our_hooks(_hk.get("SubagentStart") or []):
         installed, cmd = True, h.get("command")
+    for _m, h in _iter_our_hooks(_hk.get("PreToolUse") or []):
+        legacy = True                       # a pre-0.4.2 (clobber-prone) registration lingers
+        if not installed:
+            cmd = h.get("command")
     lp = _hook_ledger_path()
     led_exists = os.path.exists(lp)
     allocated = None
@@ -769,13 +841,16 @@ def cmd_hook_status(args):
             "settings_path": sp, "settings_malformed": bool(err),
             "installed": installed, "command": cmd, "ledger_path": lp,
             "ledger_exists": led_exists, "total_allocated": allocated,
-            "disabled": disabled,
+            "disabled": disabled, "legacy_pretooluse": legacy,
         }, ensure_ascii=False, indent=2))
         return 0
     print(f"settings:   {sp}" + ("  ⚠ MALFORMED JSON" if err else ""))
-    print(f"installed:  {'yes' if installed else 'no'}")
+    print(f"installed:  {'yes' if installed else 'no'}" + ("  (event: SubagentStart)" if installed else ""))
     if cmd:
         print(f"  command:  {cmd}")
+    if legacy:
+        print("  ⚠ legacy:  a pre-0.4.2 PreToolUse entry is still present (clobber-prone);"
+              " re-run `hook install` to migrate it, or `hook uninstall` to clear it")
     print(f"ledger:     {lp}  ({'exists' if led_exists else 'not created yet'}"
           + (f", {allocated} names allocated" if allocated is not None else "") + ")")
     if disabled:

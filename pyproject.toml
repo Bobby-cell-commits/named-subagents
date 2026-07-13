@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "named-subagents"
-version = "0.4.1"
+version = "0.4.2"
 description = "Themed, non-repeating nicknames for Claude Code subagents — a userspace port of Codex's nickname_candidates"
 readme = "README.md"
 license = {text = "MIT"}

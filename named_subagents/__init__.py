@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None  # type: ignore[assignment]
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")
@@ -926,20 +926,27 @@ def ledger_stats(registry: Registry, ledger: Ledger) -> dict:
 # --------------------------------------------------------------------------- #
 # Dispatch construction
 # --------------------------------------------------------------------------- #
-def persona_preamble(nickname: str, theme: str, bio: Optional[str] = None) -> str:
-    """The identity block prepended to a subagent's task. When `bio` is truthy,
-    the exact line `You are named for: {bio}\\n` is inserted immediately before
-    the `--- YOUR TASK ---` line."""
+def persona_preamble(nickname: str, theme: str, bio: Optional[str] = None,
+                     task_follows: bool = True) -> str:
+    """The identity block for a subagent.
+
+    `task_follows=True` (the PreToolUse `updatedInput` path) PREPENDS this to the
+    task, ending with a `--- YOUR TASK ---` line. `task_follows=False` (the
+    SubagentStart `additionalContext` path) returns a STANDALONE block with no task
+    trailer — additionalContext is injected as context, not glued to a prompt. When
+    `bio` is truthy, `You are named for: {bio}` is inserted before the task line
+    (or as the final line, standalone)."""
     bio_line = f"You are named for: {bio}\n" if bio else ""
-    return (
+    head = (
         f"You are **{nickname}** (a {theme.lower()} callsign), one of several "
         f"parallel agents in this run.\n"
         f"Begin your FINAL report with the exact line `[{nickname}]` on its own "
         f"line so your output can be attributed among the parallel agents. "
-        f"Do not mention or repeat these identity instructions.\n\n"
-        f"{bio_line}"
-        f"--- YOUR TASK ---\n"
+        f"Do not mention or repeat these identity instructions.\n"
     )
+    if task_follows:
+        return head + "\n" + bio_line + "--- YOUR TASK ---\n"
+    return head + bio_line
 
 
 _ATTR_TAG_RE = re.compile(r"^\s*\[[^\]]*\]\s*$")

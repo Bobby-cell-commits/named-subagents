@@ -154,9 +154,14 @@ export interface LedgerStats {
 }
 export function ledgerStats(registry: Registry, ledger: Ledger): LedgerStats;
 
-/** When `bio` is truthy, the exact line `You are named for: {bio}\n` is
- * inserted immediately before the `--- YOUR TASK ---` line. */
-export function personaPreamble(nickname: string, theme: string, bio?: string | null): string;
+/** The identity block for a subagent. `taskFollows=true` prepends it to the
+ * task and ends with `--- YOUR TASK ---`; `taskFollows=false` returns a
+ * standalone block (no task trailer) for the SubagentStart additionalContext
+ * path. When `bio` is truthy, `You are named for: {bio}` is inserted before the
+ * task line (or as the final line, standalone). */
+export function personaPreamble(
+  nickname: string, theme: string, bio?: string | null, taskFollows?: boolean,
+): string;
 
 /** Ensure `report` begins with the attribution line `[nickname]` (verify/repair
  * the prefix for the text-parsing path). Attribution does not depend on this —

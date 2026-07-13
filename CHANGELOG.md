@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.4.2] — 2026-07-13
+
+**Auto-namer moved to `SubagentStart` (robust delivery).** The 0.4.x auto-namer
+delivered the nickname via a `PreToolUse` hook returning `hookSpecificOutput.updatedInput`
+on the `Agent` tool — but Claude Code **silently drops** `updatedInput` for the Agent
+tool when more than one PreToolUse hook runs
+([claude-code#15897](https://github.com/anthropics/claude-code/issues/15897),
+[#39814](https://github.com/anthropics/claude-code/issues/39814)), so a user with any
+other PreToolUse hook got no nickname while the ledger still burned names. The public
+API is **additive** — no existing entry point changed signature or output.
+
+### Changed
+- **Auto-namer now uses `SubagentStart` + `hookSpecificOutput.additionalContext`**
+  instead of PreToolUse `updatedInput` (both ports). `additionalContext` is
+  **additive** (multiple hooks each append, none clobbers) and reaches the subagent's
+  own context, so it is immune to the multi-hook clobber above. Verified live on
+  Claude Code 2.1.207.
+- **Role-based theming in the hook path.** `SubagentStart` carries only `agent_type`
+  (no task/description), so the hook themes by role. The CLI (`assign`/`allocate`)
+  keeps full task+role theming — unchanged.
+- **`hook install` registers under `SubagentStart` (matcher `*`) and migrates** any
+  pre-0.4.2 `PreToolUse` auto-namer entry to SubagentStart in the same run. `hook
+  uninstall` removes our entry from **both** events. `hook status` + `doctor` report
+  the SubagentStart install and flag a lingering legacy PreToolUse entry as
+  clobber-prone.
+
+### Kept
+- The legacy `PreToolUse` → `updatedInput` code path still works (`hook run` routes
+  by `hook_event_name`), so a lingering pre-0.4.2 registration keeps functioning until
+  migrated. `persona_preamble(..., task_follows=False)` / `personaPreamble(..., false)`
+  is the new standalone identity block used by `additionalContext`; `task_follows=True`
+  output is byte-identical to prior releases.
+
 ## [Unreleased]
 
 ### Changed (internal — no package-content change)

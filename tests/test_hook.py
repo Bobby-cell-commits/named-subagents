@@ -137,6 +137,23 @@ with tempfile.TemporaryDirectory() as d:
                  "run", env_extra=env)
     check("mutates the Task alias too", updated_input(r) is not None, r.stdout[:200])
 
+section("hook run — SubagentStart (additionalContext)")
+with tempfile.TemporaryDirectory() as d:
+    env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "led.json")}
+    r = run_hook(json.dumps({"hook_event_name": "SubagentStart", "agent_type": "Explore"}),
+                 "run", env_extra=env)
+    check("SubagentStart event -> exit 0", r.returncode == 0, r.stderr[:300])
+    try:
+        hso = json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else {}
+    except (ValueError, KeyError):
+        hso = {}
+    check("hookEventName == SubagentStart", hso.get("hookEventName") == "SubagentStart", r.stdout[:200])
+    ac = hso.get("additionalContext", "")
+    check("additionalContext carries the persona SIG", SIG in ac, ac[:160])
+    check("additionalContext has NO '--- YOUR TASK ---' trailer (standalone block)",
+          "--- YOUR TASK ---" not in ac, ac[-120:])
+    check("SubagentStart emits no updatedInput", "updatedInput" not in hso)
+
 section("hook run — passthrough on non-dispatch tools")
 r = run_hook(payload("Bash", command="ls -la"), "run")
 check("Bash tool -> exit 0", r.returncode == 0)
@@ -263,11 +280,13 @@ with tempfile.TemporaryDirectory() as d:
     check("install into absent settings -> exit 0", r.returncode == 0, r.stderr[:300])
     check("install created the settings file", os.path.exists(sp))
     data = json.load(open(sp))
-    pre = data.get("hooks", {}).get("PreToolUse", [])
-    ours = [m for m in pre if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
-    check("install registered exactly one auto-namer hook", len(ours) == 1, json.dumps(pre)[:300])
+    ss = data.get("hooks", {}).get("SubagentStart", [])
+    ours = [m for m in ss if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
+    check("install registered exactly one auto-namer hook (SubagentStart)", len(ours) == 1, json.dumps(ss)[:300])
     if ours:
-        check("matcher targets Agent|Task", "Agent" in ours[0]["matcher"] and "Task" in ours[0]["matcher"])
+        check("matcher is the wildcard '*'", ours[0]["matcher"] == "*")
+    check("install did NOT register under PreToolUse",
+          not data.get("hooks", {}).get("PreToolUse"))
 
     r = run_hook("", "status", "--settings", sp)
     check("status exit 0 + reports installed", r.returncode == 0 and "install" in r.stdout.lower(),
@@ -276,34 +295,60 @@ with tempfile.TemporaryDirectory() as d:
     # idempotent re-install (existing file -> writes a backup, no duplicate)
     r = run_hook("", "install", "--settings", sp)
     data2 = json.load(open(sp))
-    ours2 = [m for m in data2["hooks"]["PreToolUse"]
+    ours2 = [m for m in data2["hooks"]["SubagentStart"]
              if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
     check("re-install is idempotent (still exactly one)", len(ours2) == 1)
     check("re-install of an existing file wrote a .bak", os.path.exists(sp + ".bak"))
 
     r = run_hook("", "uninstall", "--settings", sp)
     data3 = json.load(open(sp))
-    ours3 = [m for m in data3.get("hooks", {}).get("PreToolUse", [])
+    ours3 = [m for m in data3.get("hooks", {}).get("SubagentStart", [])
              if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
     check("uninstall removed our hook", len(ours3) == 0)
+
+section("hook install — migrates a legacy PreToolUse entry")
+with tempfile.TemporaryDirectory() as d:
+    sp = os.path.join(d, "settings.json")
+    # Pre-seed a pre-0.4.2 auto-namer registration under PreToolUse (marker present).
+    json.dump({"hooks": {"PreToolUse": [
+        {"matcher": "Agent|Task", "hooks": [{"type": "command",
+         "command": f"python -m named_subagents hook run --managed-by {MARKER}"}]}]}},
+        open(sp, "w"))
+    r = run_hook("", "install", "--settings", sp)
+    check("install over a legacy PreToolUse entry -> exit 0", r.returncode == 0, r.stderr[:300])
+    data = json.load(open(sp))
+    pre = data.get("hooks", {}).get("PreToolUse", [])
+    legacy_left = [m for m in pre if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
+    check("legacy PreToolUse auto-namer entry is gone after migrate", len(legacy_left) == 0, json.dumps(pre)[:200])
+    ss = data.get("hooks", {}).get("SubagentStart", [])
+    ours = [m for m in ss if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
+    check("a SubagentStart auto-namer entry now exists", len(ours) == 1, json.dumps(ss)[:200])
 
 section("hook install — merge safety")
 with tempfile.TemporaryDirectory() as d:
     sp = os.path.join(d, "settings.json")
-    json.dump({"hooks": {"PreToolUse": [
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}]},
+    # An UNRELATED SubagentStart hook (no marker) must survive install AND uninstall.
+    json.dump({"hooks": {"SubagentStart": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": "echo unrelated"}]}]},
         "permissions": {"allow": ["Bash"]}}, open(sp, "w"))
     r = run_hook("", "install", "--settings", sp)
     check("install into populated settings -> exit 0", r.returncode == 0, r.stderr[:300])
     data = json.load(open(sp))
-    check("preserves the pre-existing Bash hook",
-          any(m.get("matcher") == "Bash" for m in data["hooks"]["PreToolUse"]))
+    ss = data["hooks"]["SubagentStart"]
+    check("preserves the pre-existing unrelated SubagentStart hook",
+          any("echo unrelated" in h.get("command", "") for m in ss for h in m.get("hooks", [])))
+    check("adds our auto-namer SubagentStart entry",
+          any(MARKER in h.get("command", "") for m in ss for h in m.get("hooks", [])))
     check("preserves unrelated top-level keys", data.get("permissions") == {"allow": ["Bash"]})
-    # uninstall must leave the Bash hook untouched
+    # uninstall must leave the unrelated hook untouched
     run_hook("", "uninstall", "--settings", sp)
     data = json.load(open(sp))
-    check("uninstall leaves the unrelated Bash hook intact",
-          any(m.get("matcher") == "Bash" for m in data["hooks"]["PreToolUse"]))
+    check("uninstall leaves the unrelated SubagentStart hook intact",
+          any("echo unrelated" in h.get("command", "")
+              for m in data["hooks"]["SubagentStart"] for h in m.get("hooks", [])))
+    check("uninstall removed our SubagentStart entry",
+          not any(MARKER in h.get("command", "")
+                  for m in data["hooks"]["SubagentStart"] for h in m.get("hooks", [])))
 
 section("hook install — refuses to clobber malformed settings")
 with tempfile.TemporaryDirectory() as d:
