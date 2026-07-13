@@ -3,6 +3,47 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.4.3] — 2026-07-13
+
+**The auto-namer hook now themes by TASK, not just role.** In 0.4.2 the hook could
+only theme from `agent_type` — and CC's workhorse `general-purpose` role maps to one
+pool, so every mixed fan-out came back as programmers. Now a security review gets a
+guardian, a debug hunt a detective, a docs pass a writer — automatically. Validated
+end-to-end on Claude Code 2.1.207 with mixed-task and mixed-role parallel fan-outs
+(each subagent's own transcript received the theme matching its own task).
+
+### Added
+- **Output-free `PreToolUse` task-capture hook** (matcher `Agent|Task`, registered by
+  `hook install` alongside SubagentStart, marked `--capture`): pushes each dispatch's
+  `{role, task}` onto a small per-session FIFO queue. It returns **nothing**, so it is
+  not exposed to the multi-hook `updatedInput` clobber that broke 0.4.0–0.4.1
+  (claude-code#15897/#39814).
+- **`resolve_for_hook` / `resolveForHook`** (+ `GENERIC_ROLES`): hook-path resolution —
+  task-first for generic roles (`general-purpose`, `worker`), role-first for
+  informative ones (`Explore`, `Plan`, custom types), task fallback for unknown custom
+  roles (previously collapsed into the `default` pool).
+- `hook status` reports the capture registration (`capture:` line; `capture_installed`
+  in `--json`); doctor's hook-selftest exercises the capture → pop → task-theming chain;
+  a new parity step gates byte-identical task-themed `additionalContext` across ports.
+
+### Changed
+- **`SubagentStart` pops the queue before theming**: oldest **role-matching** entry
+  (never steals a different-role sibling's task; validated against live batched event
+  orderings where blind FIFO would mispair), 30s TTL prunes orphaned entries, allocation
+  still happens at start-time so an orphaned dispatch burns no ledger name. Queue empty /
+  mismatch / no `session_id` → the 0.4.2 role-theming, unchanged.
+- A CLI-`assign`ed (already-named) dispatch pushes a **tombstone** entry and its
+  subagent start emits nothing — mixing `assign` with the auto-namer can no longer
+  desync sibling theming.
+- `hook install` registers both hooks, refreshes both idempotently, and still migrates
+  (removes) any legacy pre-0.4.2 mutate-path PreToolUse entry — while leaving the new
+  capture entry in place. `hook uninstall` removes everything of ours from both events.
+
+### Notes
+- Queue files live under `$XDG_STATE_HOME/named-subagents/queue/` (override:
+  `NAMED_SUBAGENTS_QUEUE_DIR`); they are per-session, tiny, and self-clean on drain.
+- Fail-open contract unchanged: any hook error emits nothing and exits 0.
+
 ## [0.4.2] — 2026-07-13
 
 **Auto-namer moved to `SubagentStart` (robust delivery).** The 0.4.x auto-namer

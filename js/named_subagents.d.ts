@@ -88,6 +88,16 @@ export interface ResolveOpts {
 }
 export function resolveCategory(registry: Registry, opts?: ResolveOpts): string;
 
+/** Roles that say nothing about the task — the auto-namer hook falls through to
+ * task-keyword theming for these (v0.4.3). */
+export const GENERIC_ROLES: Set<string>;
+/** Hook-path resolution (v0.4.3): task-first for GENERIC_ROLES, role-first for
+ * specific roles, task fallback for unknown custom roles. */
+export function resolveForHook(
+  registry: Registry,
+  opts?: { role?: string | null; task?: string | null },
+): string;
+
 /** Per-category ledger record (schema v2; unknown future keys are preserved). */
 export interface LedgerRecord {
   used?: string[];

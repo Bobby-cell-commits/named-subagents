@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None  # type: ignore[assignment]
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")
@@ -468,6 +468,29 @@ def resolve_category(
         if by_kw:
             return by_kw
     return "default"
+
+
+# Roles that say nothing about the task ("general-purpose" is CC's workhorse type):
+# in the auto-namer hook, these fall through to task-keyword theming so a fan-out
+# isn't pinned to one pool by its role alone.
+GENERIC_ROLES = ("general-purpose", "worker")
+
+
+def resolve_for_hook(
+    registry: Registry,
+    role: Optional[str] = None,
+    task: Optional[str] = None,
+) -> str:
+    """Hook-path resolution (v0.4.3): task-first for GENERIC_ROLES, role-first for
+    specific roles (an informative role like `Explore` still wins), and a task
+    fallback for unknown custom roles (which would otherwise collapse into the
+    'default' pool)."""
+    role_l = (role or "").strip().lower()
+    by_role = registry.by_subagent_type(role) if role else None
+    by_task = registry.by_keyword(task) if task else None
+    if role_l in GENERIC_ROLES:
+        return by_task or by_role or "default"
+    return by_role or by_task or "default"
 
 
 # --------------------------------------------------------------------------- #

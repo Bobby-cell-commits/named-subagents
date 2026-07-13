@@ -62,25 +62,28 @@ show three identical `Explore` labels shows three distinct explorers, with zero
 code on your side.
 
 ```bash
-named-subagents hook install     # register the SubagentStart hook in ~/.claude/settings.json
+named-subagents hook install     # register the hooks (SubagentStart + task capture) in ~/.claude/settings.json
 named-subagents hook status      # verify: installed? ledger path? names used so far
 ```
 
-That's the whole setup. **New** Claude Code sessions now inject a role-themed
-identity block (e.g. *"You are **Hudson** (an explorers & navigators callsign),
-one of several parallel agents…"*) into every subagent's own context, so parallel
-results come back attributed by nickname. Pause it any time with
-`NAMED_SUBAGENTS_HOOK_DISABLE=1` (no uninstall needed), or remove it with
+That's the whole setup. **New** Claude Code sessions now inject a task-themed
+identity block (e.g. *"You are **Durga** (a guardians & sentinels callsign),
+one of several parallel agents…"* for a security review) into every subagent's own
+context, so parallel results come back attributed by nickname. Pause it any time
+with `NAMED_SUBAGENTS_HOOK_DISABLE=1` (no uninstall needed), or remove it with
 `named-subagents hook uninstall`.
 
-**How it works.** A `SubagentStart` hook (matcher `*`). When a subagent starts, the
-hook allocates a themed, non-repeating nickname (the same ledger + generation
+**How it works.** Two hooks. An **output-free `PreToolUse` capture** (matcher
+`Agent|Task`) reads each dispatch's task and pushes it onto a small per-session
+FIFO queue; a **`SubagentStart`** hook (matcher `*`) pops the oldest role-matching
+entry, allocates a themed, non-repeating nickname (the same ledger + generation
 machinery as the CLI, lock-serialized so a parallel fan-out never collides on a
 name) and returns `hookSpecificOutput.additionalContext` carrying the identity
-block, role-themed from the subagent's `agent_type`. `additionalContext` is
-**additive** — when several hooks fire, each one's context is appended and none
-clobbers the others — so the nickname reaches the subagent even alongside your own
-hooks.
+block — **task-themed** for generic roles (`general-purpose`, `worker`), role-themed
+for informative ones (`Explore`, `Plan`, …), with a role fallback whenever no
+captured task is available. `additionalContext` is **additive** — when several
+hooks fire, each one's context is appended and none clobbers the others — so the
+nickname reaches the subagent even alongside your own hooks.
 
 **Why SubagentStart, not PreToolUse.** An earlier version rewrote the dispatch via a
 `PreToolUse` hook returning `updatedInput`. Claude Code **silently drops**
@@ -89,17 +92,21 @@ hooks.
 [#39814](https://github.com/anthropics/claude-code/issues/39814)) — so a user with
 other hooks got no nickname while the ledger still burned names. `additionalContext`
 is additive and reaches the subagent directly, so it is robust under multiple hooks.
-The legacy PreToolUse path is still handled by `hook run`, and `hook install`
-**migrates** any pre-0.4.2 registration to SubagentStart.
+(The v0.4.3 capture hook is safe here: it returns **nothing**, so it has no
+`updatedInput` to clobber.) The legacy PreToolUse path is still handled by
+`hook run`, and `hook install` **migrates** any pre-0.4.2 registration.
 
 **Honest limits.** Claude Code has no per-instance display-name field, so the *type*
 label (`Explore`) is unchanged and the nickname rides inside the subagent's context,
-not as a UI badge. Because `SubagentStart` carries only `agent_type` (no
-task/description), the hook themes by **role** — an `Explore`-role subagent gets an
-explorer, a `data`-role one a mathematician, etc. (the CLI keeps full task+role
-theming). The `[Hudson]` self-tag in the agent's reply is best-effort — an agent may
-ignore the preamble. The hook **fails open**: any error, or a future event rename,
-degrades to a normal un-named dispatch, never a broken one.
+not as a UI badge. The hook themes by **task when available, else role**:
+`SubagentStart` itself carries only `agent_type`, and there is no cross-event
+correlation key, so the capture queue pairs dispatches to subagents by FIFO order +
+role matching — validated live on Claude Code 2.1.207 (including batched event
+orderings), but in a same-role fan-out of *different-category* tasks a reordered
+start could in principle swap two siblings' themes (each still gets a distinct,
+validly-themed name). The `[Hudson]` self-tag in the agent's reply is best-effort —
+an agent may ignore the preamble. The hook **fails open**: any error, or a future
+event rename, degrades to a normal un-named dispatch, never a broken one.
 
 **Safety.** `hook run` never exits non-zero (a broken namer must never break your
 fan-out), never changes your permission posture (it returns only `additionalContext`,

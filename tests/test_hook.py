@@ -49,6 +49,7 @@ def run_hook(stdin, *argv, env_extra=None):
     env.pop("NAMED_SUBAGENTS_CONFIG", None)
     env.pop("NAMED_SUBAGENTS_HOOK_DISABLE", None)
     env["NAMED_SUBAGENTS_LEDGER"] = os.path.join(_SAFE_LEDGER_DIR, "safe-led.json")
+    env["NAMED_SUBAGENTS_QUEUE_DIR"] = os.path.join(_SAFE_LEDGER_DIR, "queue")
     if env_extra:
         env.update(env_extra)   # explicit ledger/override wins
     return subprocess.run([PY, "-m", "named_subagents.cli", "hook", *argv],
@@ -153,6 +154,153 @@ with tempfile.TemporaryDirectory() as d:
     check("additionalContext has NO '--- YOUR TASK ---' trailer (standalone block)",
           "--- YOUR TASK ---" not in ac, ac[-120:])
     check("SubagentStart emits no updatedInput", "updatedInput" not in hso)
+
+# --------------------------------------------------------------------------- #
+section("resolve_for_hook — task-first for generic roles (v0.4.3)")
+from named_subagents import load_with_config, resolve_for_hook  # noqa: E402
+_reg, _ = load_with_config(None, None, allow_cwd=False)
+_SEC_TASK = "audit auth.py for SQL injection and security vulnerabilities"
+check("generic role + security task -> security (task wins)",
+      resolve_for_hook(_reg, role="general-purpose", task=_SEC_TASK) == "security")
+check("generic role + keyword-free task -> code (role fallback)",
+      resolve_for_hook(_reg, role="general-purpose", task="qzx qzx qzx") == "code")
+check("specific role (Explore) + security task -> explore (role stays first)",
+      resolve_for_hook(_reg, role="Explore", task=_SEC_TASK) == "explore")
+check("unknown custom role + docs task -> docs (task rescues the default-pool collapse)",
+      resolve_for_hook(_reg, role="security-reviewer", task="write the README section") == "docs")
+check("no role, no task -> default",
+      resolve_for_hook(_reg) == "default")
+
+# --------------------------------------------------------------------------- #
+section("hook run --capture — output-free PreToolUse queue capture (v0.4.3)")
+
+
+def q_entries(qdir, session):
+    qp = os.path.join(qdir, f"q-{session}.jsonl")
+    if not os.path.exists(qp):
+        return None
+    return [json.loads(x) for x in open(qp).read().splitlines()]
+
+
+def capture_payload(session, prompt, description="task desc", role="general-purpose"):
+    return json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Agent",
+                       "session_id": session,
+                       "tool_input": {"description": description, "prompt": prompt,
+                                      "subagent_type": role}})
+
+
+with tempfile.TemporaryDirectory() as d:
+    env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "led.json"),
+           "NAMED_SUBAGENTS_QUEUE_DIR": os.path.join(d, "q")}
+    r = run_hook(capture_payload("s1", "Audit the auth module."), "run", "--capture",
+                 env_extra=env)
+    check("capture exits 0", r.returncode == 0, r.stderr[:300])
+    check("capture is OUTPUT-FREE (no stdout -> immune to updatedInput clobber)",
+          r.stdout.strip() == "", r.stdout[:200])
+    ents = q_entries(env["NAMED_SUBAGENTS_QUEUE_DIR"], "s1")
+    check("capture pushed one queue entry", bool(ents) and len(ents) == 1, str(ents))
+    if ents:
+        check("entry carries role + task (description + prompt)",
+              ents[0]["role"] == "general-purpose"
+              and "task desc" in ents[0]["task"] and "Audit the auth module." in ents[0]["task"])
+        check("entry is not a tombstone", ents[0]["skip"] is False)
+        check("entry has a numeric ts", isinstance(ents[0]["ts"], (int, float)))
+    # tombstone: an already-named (CLI-assigned) dispatch still pushes, marked skip
+    r = run_hook(capture_payload("s1", f"You are **Kip**, one of several {SIG}\ndo x"),
+                 "run", "--capture", env_extra=env)
+    ents = q_entries(env["NAMED_SUBAGENTS_QUEUE_DIR"], "s1")
+    check("SIG-carrying dispatch pushes a TOMBSTONE (skip=true), never a push-skip",
+          bool(ents) and len(ents) == 2 and ents[1]["skip"] is True, str(ents))
+    # non-dispatch tools + kill switch leave no trace
+    r = run_hook(json.dumps({"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                             "session_id": "s-bash", "tool_input": {"command": "ls"}}),
+                 "run", "--capture", env_extra=env)
+    check("non-dispatch tool -> exit 0, nothing queued",
+          r.returncode == 0 and q_entries(env["NAMED_SUBAGENTS_QUEUE_DIR"], "s-bash") is None)
+    r = run_hook(capture_payload("s-off", "x"), "run", "--capture",
+                 env_extra={**env, "NAMED_SUBAGENTS_HOOK_DISABLE": "1"})
+    check("kill switch -> exit 0, nothing queued",
+          r.returncode == 0 and q_entries(env["NAMED_SUBAGENTS_QUEUE_DIR"], "s-off") is None)
+    # fail-open
+    r = run_hook("not json {{{", "run", "--capture", env_extra=env)
+    check("capture fail-open on garbage stdin (exit 0)", r.returncode == 0, r.stderr[:200])
+    blocker = os.path.join(d, "iam-a-file")
+    open(blocker, "w").write("x")
+    r = run_hook(capture_payload("s2", "x"), "run", "--capture",
+                 env_extra={**env, "NAMED_SUBAGENTS_QUEUE_DIR": os.path.join(blocker, "q")})
+    check("capture fail-open on unwritable queue dir (exit 0, no traceback)",
+          r.returncode == 0 and "Traceback" not in r.stderr, r.stderr[:200])
+
+# --------------------------------------------------------------------------- #
+section("hook run — SubagentStart pops the queue: task-theming (v0.4.3)")
+
+
+def ss_event(session, agent_type="general-purpose", agent_id="a1"):
+    return json.dumps({"hook_event_name": "SubagentStart", "session_id": session,
+                       "agent_id": agent_id, "agent_type": agent_type})
+
+
+def ss_context(r):
+    if not r.stdout.strip():
+        return None
+    try:
+        return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    except (ValueError, KeyError):
+        return None
+
+
+with tempfile.TemporaryDirectory() as d:
+    env = {"NAMED_SUBAGENTS_LEDGER": os.path.join(d, "led.json"),
+           "NAMED_SUBAGENTS_QUEUE_DIR": os.path.join(d, "q")}
+    # full pipeline: generic role + security task -> guardians (not programmers)
+    run_hook(capture_payload("t1", "Audit auth.py for SQL injection and security vulnerabilities.",
+                             description="security audit"), "run", "--capture", env_extra=env)
+    r = run_hook(ss_event("t1"), "run", env_extra=env)
+    ac = ss_context(r) or ""
+    check("captured task themes the SS nickname (security -> guardians pool)",
+          "guardians & sentinels" in ac, ac[:160])
+    check("queue entry consumed (file removed when drained)",
+          q_entries(env["NAMED_SUBAGENTS_QUEUE_DIR"], "t1") in (None, []))
+    # role-matched pop: SS arrival order permuted vs push order
+    run_hook(capture_payload("t2", "Find where parse_config is defined.", role="Explore",
+                             description="explore probe"), "run", "--capture", env_extra=env)
+    run_hook(capture_payload("t2", "Write the README section for storage.py.",
+                             description="docs task"), "run", "--capture", env_extra=env)
+    r_gp = run_hook(ss_event("t2", "general-purpose"), "run", env_extra=env)
+    r_ex = run_hook(ss_event("t2", "Explore"), "run", env_extra=env)
+    check("role-matched pop: general-purpose SS skips the Explore entry (docs task themes it)",
+          "writers & authors" in (ss_context(r_gp) or ""), (ss_context(r_gp) or "")[:160])
+    check("role-matched pop: Explore SS gets its own entry (role stays first for specific roles)",
+          "explorers & navigators" in (ss_context(r_ex) or ""), (ss_context(r_ex) or "")[:160])
+    # tombstone pop -> SS emits nothing (CLI already named it); queue stays aligned
+    run_hook(capture_payload("t3", f"You are **Kip**, one of several {SIG}\ndo x"),
+             "run", "--capture", env_extra=env)
+    run_hook(capture_payload("t3", "Audit auth for injection.", description="sec"),
+             "run", "--capture", env_extra=env)
+    r1 = run_hook(ss_event("t3", agent_id="a1"), "run", env_extra=env)
+    r2 = run_hook(ss_event("t3", agent_id="a2"), "run", env_extra=env)
+    check("tombstone pop -> SS is silent for the CLI-named dispatch",
+          r1.returncode == 0 and ss_context(r1) is None, r1.stdout[:160])
+    check("sibling after the tombstone still gets ITS task's theme (no desync)",
+          "guardians & sentinels" in (ss_context(r2) or ""), (ss_context(r2) or "")[:160])
+    # TTL: a stale orphan is pruned, SS falls back to role theming
+    qdir = env["NAMED_SUBAGENTS_QUEUE_DIR"]
+    os.makedirs(qdir, exist_ok=True)
+    with open(os.path.join(qdir, "q-t4.jsonl"), "w") as fh:
+        fh.write(json.dumps({"role": "general-purpose", "task": _SEC_TASK,
+                             "skip": False, "ts": 1.0}) + "\n")
+    r = run_hook(ss_event("t4"), "run", env_extra=env)
+    check("stale orphan entry is TTL-pruned -> role fallback (programmers, not guardians)",
+          "programmers & computing pioneers" in (ss_context(r) or ""),
+          (ss_context(r) or "")[:160])
+    # empty queue / no session_id -> v0.4.2 role fallback unchanged
+    r = run_hook(ss_event("t5-nothing"), "run", env_extra=env)
+    check("empty queue -> role fallback still names",
+          "programmers & computing pioneers" in (ss_context(r) or ""))
+    r = run_hook(json.dumps({"hook_event_name": "SubagentStart", "agent_type": "Explore"}),
+                 "run", env_extra=env)
+    check("SS event without session_id -> still names by role (v0.4.2 behavior)",
+          "explorers & navigators" in (ss_context(r) or ""))
 
 section("hook run — passthrough on non-dispatch tools")
 r = run_hook(payload("Bash", command="ls -la"), "run")
@@ -285,8 +433,15 @@ with tempfile.TemporaryDirectory() as d:
     check("install registered exactly one auto-namer hook (SubagentStart)", len(ours) == 1, json.dumps(ss)[:300])
     if ours:
         check("matcher is the wildcard '*'", ours[0]["matcher"] == "*")
-    check("install did NOT register under PreToolUse",
-          not data.get("hooks", {}).get("PreToolUse"))
+    # v0.4.3: install ALSO registers the output-free PreToolUse task-capture hook
+    pre = data.get("hooks", {}).get("PreToolUse", [])
+    cap = [m for m in pre if any(MARKER in h.get("command", "") and "--capture" in h.get("command", "")
+                                 for h in m.get("hooks", []))]
+    check("install registered exactly one task-capture hook (PreToolUse --capture)",
+          len(cap) == 1, json.dumps(pre)[:300])
+    if cap:
+        check("capture matcher targets dispatch tools (Agent|Task)",
+              cap[0]["matcher"] == "Agent|Task")
 
     r = run_hook("", "status", "--settings", sp)
     check("status exit 0 + reports installed", r.returncode == 0 and "install" in r.stdout.lower(),
@@ -318,8 +473,13 @@ with tempfile.TemporaryDirectory() as d:
     check("install over a legacy PreToolUse entry -> exit 0", r.returncode == 0, r.stderr[:300])
     data = json.load(open(sp))
     pre = data.get("hooks", {}).get("PreToolUse", [])
-    legacy_left = [m for m in pre if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
+    legacy_left = [m for m in pre
+                   if any(MARKER in h.get("command", "") and "--capture" not in h.get("command", "")
+                          for h in m.get("hooks", []))]
     check("legacy PreToolUse auto-namer entry is gone after migrate", len(legacy_left) == 0, json.dumps(pre)[:200])
+    cap = [m for m in pre if any("--capture" in h.get("command", "") for h in m.get("hooks", []))]
+    check("the v0.4.3 task-capture entry replaced it (marker + --capture)",
+          len(cap) == 1, json.dumps(pre)[:200])
     ss = data.get("hooks", {}).get("SubagentStart", [])
     ours = [m for m in ss if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
     check("a SubagentStart auto-namer entry now exists", len(ours) == 1, json.dumps(ss)[:200])
@@ -349,6 +509,9 @@ with tempfile.TemporaryDirectory() as d:
     check("uninstall removed our SubagentStart entry",
           not any(MARKER in h.get("command", "")
                   for m in data["hooks"]["SubagentStart"] for h in m.get("hooks", [])))
+    check("uninstall removed the task-capture PreToolUse entry too",
+          not any(MARKER in h.get("command", "")
+                  for m in data.get("hooks", {}).get("PreToolUse", []) for h in m.get("hooks", [])))
 
 section("hook install — refuses to clobber malformed settings")
 with tempfile.TemporaryDirectory() as d:
