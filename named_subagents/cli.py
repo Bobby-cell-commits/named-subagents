@@ -416,7 +416,7 @@ def _doctor_checks(args):
     hooked = next(_iter_our_hooks(_pre), None)
     add("INFO", "hook-install",
         f"registered in {sp}" if hooked
-        else f"not installed (run `named-subagents hook install` to enable auto-naming)")
+        else "not installed (run `named-subagents hook install` to enable auto-naming)")
     if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
         # Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
         add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE")

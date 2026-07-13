@@ -52,3 +52,29 @@ packages = ["named_subagents"]
 # hints reach downstream type-checkers; it must be shipped in the wheel too.
 [tool.setuptools.package-data]
 named_subagents = ["registry.json", "py.typed"]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 120
+
+[tool.ruff.lint]
+# Keep the checks that catch real defects — pyflakes (F: unused/undefined names)
+# and the E9 syntax family — and match the project's deliberate house style:
+#   E702  the compact `x = foo(); os.makedirs(x)` idiom used throughout the tests
+#   E402  mid-file imports, incl. the tests' `sys.path` bootstrap under tests/
+#   E731  the occasional assigned lambda
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402", "E702", "E731"]
+
+[tool.coverage.run]
+source = ["named_subagents"]
+
+[tool.coverage.report]
+# The floor gates the LIBRARY CORE (named_subagents/__init__.py). `cli.py` is a
+# thin argparse shell exercised end-to-end by the CLI-subprocess + parity tests,
+# which run in CHILD processes that in-process line coverage cannot observe — so
+# it is excluded from the floor here rather than reported as a misleading 0%.
+# (Full subprocess coverage would need a COVERAGE_PROCESS_START harness — future.)
+omit = ["named_subagents/cli.py", "named_subagents/__main__.py"]
+fail_under = 85
+show_missing = true

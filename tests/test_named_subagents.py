@@ -1,6 +1,6 @@
 """Comprehensive + stress tests for named_subagents (stdlib only, no pytest).
 
-Run:  python test_named_subagents.py
+Run:  python tests/test_named_subagents.py
 Exits non-zero on any failure; prints PASS/FAIL per property.
 """
 
@@ -11,6 +11,10 @@ import re
 import subprocess
 import sys
 import tempfile
+
+# Repo root importable when run as `python tests/test_named_subagents.py`
+# (sys.path[0] is tests/; the package lives one level up).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import named_subagents as ns
 from named_subagents import (
@@ -819,7 +823,7 @@ check("swarm prompt round-trips (quotes/newline/backslash survive)",
 # --------------------------------------------------------------------------- #
 section("CLI v0.2 (subprocess)")
 PY = sys.executable
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (one level up from tests/)
 
 
 def run_cli(*argv, env_extra=None):

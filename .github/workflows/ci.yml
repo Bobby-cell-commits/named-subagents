@@ -16,18 +16,18 @@ jobs:
       matrix:
         python: ["3.8", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Unit tests
-        run: python test_named_subagents.py
+        run: python tests/test_named_subagents.py
       - name: Auto-namer hook tests
-        run: python test_hook.py
+        run: python tests/test_hook.py
       - name: Resolution accuracy eval
-        run: python eval_resolution.py
+        run: python tests/eval_resolution.py
       - name: Demo smoke
-        run: python demo.py > /dev/null
+        run: python examples/demo.py > /dev/null
       - name: Install smoke (wheel ships registry.json + py.typed)
         run: |
           pip install --quiet .
@@ -50,8 +50,8 @@ jobs:
       matrix:
         node: ["18", "20", "22"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
       - name: Unit tests
@@ -69,8 +69,8 @@ jobs:
   types:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
       - name: TypeScript surface check (.d.ts exercised by types_test.ts)
@@ -82,12 +82,43 @@ jobs:
   parity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "20"
       - name: Cross-language parity
         run: bash scripts/parity_check.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Ruff lint (config + rationale in pyproject.toml [tool.ruff])
+        run: |
+          python -m pip install --quiet ruff
+          ruff check .
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Library-core line coverage
+        # Gates the library core (named_subagents/__init__.py). The floor + the
+        # cli.py exclusion (it's exercised only via subprocess, invisible to
+        # in-process line coverage) live in pyproject.toml [tool.coverage].
+        run: |
+          python -m pip install --quiet coverage
+          coverage run -p --source=named_subagents tests/test_named_subagents.py > /dev/null
+          coverage run -p --source=named_subagents tests/test_hook.py > /dev/null
+          coverage run -p --source=named_subagents tests/eval_resolution.py > /dev/null
+          coverage combine
+          coverage report

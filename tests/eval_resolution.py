@@ -12,6 +12,9 @@ import json
 import os
 import sys
 
+# Repo root importable when run as `python tests/eval_resolution.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import named_subagents as ns
 
 FLOOR = 0.60

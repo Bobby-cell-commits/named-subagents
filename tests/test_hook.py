@@ -2,7 +2,7 @@
 """Tests for the auto-namer hook: `hook run` (the PreToolUse handler) and the
 `hook install|uninstall|status` settings-management verbs.
 
-Run:  python test_hook.py   (stdlib only, no pytest). Exit non-zero on any FAIL.
+Run:  python tests/test_hook.py   (stdlib only, no pytest). Exit non-zero on any FAIL.
 
 The load-bearing property is FAIL-OPEN: `hook run` must NEVER exit non-zero and
 NEVER crash on bad input — a broken hook would break every subagent dispatch.
@@ -14,7 +14,11 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# Repo root (one level up from tests/) — the subprocess CWD so `python -m
+# named_subagents.cli` resolves the package from source without installing, and
+# on sys.path so this file's in-process `from named_subagents import ...` resolves.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 PY = sys.executable
 SIG = "parallel agents in this run."   # stable substring of persona_preamble()
 MARKER = "named-subagents-autonamer"   # sentinel in the registered hook command
