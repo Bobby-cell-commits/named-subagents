@@ -326,6 +326,20 @@ r = run_cli("doctor")
 check("doctor exits 0 when clean", r.returncode == 0, r.stderr[:200])
 check("doctor reports [PASS] hook-selftest", "[PASS] hook-selftest" in r.stdout, r.stdout[-400:])
 check("doctor reports hook-install status", "hook-install" in r.stdout)
+# review fix: the kill switch is a legitimate, documented state — never a FAIL / non-zero exit
+r = run_cli("doctor", env_extra={"NAMED_SUBAGENTS_HOOK_DISABLE": "1"})
+check("doctor with kill-switch set -> exit 0 (not a FAIL)", r.returncode == 0, r.stderr[:200])
+check("doctor kill-switch -> hook-selftest is not a FAIL",
+      "[FAIL] hook-selftest" not in r.stdout, r.stdout[-300:])
+# review fix: a malformed (truthy non-dict) `hooks` in settings.json must not crash doctor
+with tempfile.TemporaryDirectory() as _home:
+    os.makedirs(os.path.join(_home, ".claude"))
+    with open(os.path.join(_home, ".claude", "settings.json"), "w") as fh:
+        fh.write('{"hooks": "enabled"}')
+    r = run_cli("doctor", env_extra={"HOME": _home})
+    check("doctor with a malformed non-dict `hooks` -> no crash (exit 0)",
+          r.returncode == 0, r.stderr[:200])
+    check("doctor malformed hooks -> no Traceback", "Traceback" not in r.stderr, r.stderr[:200])
 
 section("init scaffolds a valid, usable config (item 10)")
 with tempfile.TemporaryDirectory() as d:

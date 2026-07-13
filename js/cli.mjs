@@ -570,26 +570,31 @@ function doctorChecks(opts) {
   add("INFO", "hook-install",
     hooked ? `registered in ${sp}`
       : `not installed (run \`named-subagents hook install\` to enable auto-naming)`);
-  try {
-    // Self-test against a THROWAWAY ledger so doctor never writes real state.
-    const hd = mkdtempSync(join(tmpdir(), "ns-doctor-"));
-    let out;
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) {
+    // Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
+    add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE");
+  } else {
     try {
-      out = hookMutate(
-        { tool_name: "Agent", tool_input: { description: "map auth", prompt: "go", subagent_type: "Explore" } },
-        join(hd, "led.json"));
-    } finally {
-      rmSync(hd, { recursive: true, force: true });
+      // Self-test against a THROWAWAY ledger so doctor never writes real state.
+      const hd = mkdtempSync(join(tmpdir(), "ns-doctor-"));
+      let out;
+      try {
+        out = hookMutate(
+          { tool_name: "Agent", tool_input: { description: "map auth", prompt: "go", subagent_type: "Explore" } },
+          join(hd, "led.json"));
+      } finally {
+        rmSync(hd, { recursive: true, force: true });
+      }
+      const ui = (out && out.updatedInput) || {};
+      const ok = (ui.description || "").endsWith("map auth")
+        && ui.description !== "map auth"
+        && (ui.prompt || "").includes(PERSONA_SIG);
+      add(ok ? "PASS" : "FAIL", "hook-selftest",
+        ok ? "`hook run` produces a valid nicknamed dispatch"
+          : `unexpected mutation: ${JSON.stringify(out)}`);
+    } catch (e) {
+      add("FAIL", "hook-selftest", `${e.name}: ${e.message}`);
     }
-    const ui = (out && out.updatedInput) || {};
-    const ok = (ui.description || "").endsWith("map auth")
-      && ui.description !== "map auth"
-      && (ui.prompt || "").includes(PERSONA_SIG);
-    add(ok ? "PASS" : "FAIL", "hook-selftest",
-      ok ? "`hook run` produces a valid nicknamed dispatch"
-        : `unexpected mutation: ${JSON.stringify(out)}`);
-  } catch (e) {
-    add("FAIL", "hook-selftest", `${e.name}: ${e.message}`);
   }
 
   return checks;

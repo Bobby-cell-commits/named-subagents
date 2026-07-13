@@ -411,26 +411,32 @@ def _doctor_checks(args):
     # 9. auto-namer hook — install status (informational) + a live self-test
     sp = _settings_path(args)
     sdata, _serr = _read_settings(sp)
-    hooked = next(_iter_our_hooks((sdata.get("hooks") or {}).get("PreToolUse") or []), None)
+    _sh = sdata.get("hooks")   # guard a truthy non-dict `hooks` -> report, never crash
+    _pre = (_sh.get("PreToolUse") if isinstance(_sh, dict) else None) or []
+    hooked = next(_iter_our_hooks(_pre), None)
     add("INFO", "hook-install",
         f"registered in {sp}" if hooked
         else f"not installed (run `named-subagents hook install` to enable auto-naming)")
-    try:
-        # Self-test against a THROWAWAY ledger so doctor never writes real state.
-        with tempfile.TemporaryDirectory() as _hd:
-            out = _hook_mutate(
-                {"tool_name": "Agent",
-                 "tool_input": {"description": "map auth", "prompt": "go", "subagent_type": "Explore"}},
-                ledger_path=os.path.join(_hd, "led.json"))
-        ui = (out or {}).get("updatedInput", {})
-        ok = (ui.get("description", "").endswith("map auth")
-              and ui.get("description") != "map auth"
-              and _PERSONA_SIG in ui.get("prompt", ""))
-        add("PASS" if ok else "FAIL", "hook-selftest",
-            "`hook run` produces a valid nicknamed dispatch" if ok
-            else f"unexpected mutation: {out}")
-    except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
-        add("FAIL", "hook-selftest", f"{type(e).__name__}: {e}")
+    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
+        # Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
+        add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE")
+    else:
+        try:
+            # Self-test against a THROWAWAY ledger so doctor never writes real state.
+            with tempfile.TemporaryDirectory() as _hd:
+                out = _hook_mutate(
+                    {"tool_name": "Agent",
+                     "tool_input": {"description": "map auth", "prompt": "go", "subagent_type": "Explore"}},
+                    ledger_path=os.path.join(_hd, "led.json"))
+            ui = (out or {}).get("updatedInput", {})
+            ok = (ui.get("description", "").endswith("map auth")
+                  and ui.get("description") != "map auth"
+                  and _PERSONA_SIG in ui.get("prompt", ""))
+            add("PASS" if ok else "FAIL", "hook-selftest",
+                "`hook run` produces a valid nicknamed dispatch" if ok
+                else f"unexpected mutation: {out}")
+        except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
+            add("FAIL", "hook-selftest", f"{type(e).__name__}: {e}")
 
     return checks
 

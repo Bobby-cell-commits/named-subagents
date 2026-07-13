@@ -297,6 +297,11 @@ section("doctor knows the auto-namer (item 1)");
   check("doctor reports [PASS] hook-selftest", (r.stdout || "").includes("[PASS] hook-selftest"),
     (r.stdout || "").slice(-400));
   check("doctor reports hook-install status", (r.stdout || "").includes("hook-install"));
+  // review fix: the kill switch is a legitimate, documented state — never a FAIL / non-zero exit
+  const rk = runCli(["doctor"], { NAMED_SUBAGENTS_HOOK_DISABLE: "1" });
+  check("doctor with kill-switch set -> exit 0 (not a FAIL)", rk.status === 0, (rk.stderr || "").slice(0, 200));
+  check("doctor kill-switch -> hook-selftest is not a FAIL",
+    !(rk.stdout || "").includes("[FAIL] hook-selftest"), (rk.stdout || "").slice(-300));
 }
 
 section("init scaffolds a valid, usable config (item 10)");
