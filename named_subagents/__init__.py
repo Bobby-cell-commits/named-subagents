@@ -41,7 +41,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None  # type: ignore[assignment]
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")

@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.4.1] — 2026-07-13
+
+Release-pipeline validation. Exercises the v0.4.0 migration of npm publishing to
+**OIDC Trusted Publishing** (token-free, matching PyPI). No package-content
+changes vs 0.4.0 — this is a patch release confirming the reconfigured release
+workflow end-to-end.
+
 ## [0.4.0] — 2026-07-13
 
 Install-once **auto-namer**. The whole point of the package — themed, non-repeating

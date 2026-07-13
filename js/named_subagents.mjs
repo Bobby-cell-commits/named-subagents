@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.4.1";
 export const GEN_SEP = "·"; // middle dot, e.g. "Magellan·2" on the 2nd cycle of the pool
 export const CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CONFIG";
 // The implicit ./.named-subagents.json cwd config is the one untrusted-input
