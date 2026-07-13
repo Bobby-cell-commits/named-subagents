@@ -1161,3 +1161,17 @@ def to_swarm(plan: Sequence[Assignment]) -> str:
         lines.append("    agent_type: " + json.dumps(a.subagent_type))
         lines.append("    prompt: " + json.dumps(a.prompt))
     return "\n".join(lines)
+
+
+def to_table(plan: Sequence[Assignment]) -> str:
+    """A human-readable aligned table (agent · subagent_type · theme). Padding is
+    code-point-based (``str.ljust``) so the two ports emit byte-identical output.
+    Every data row carries exactly one leading emoji, so the columns self-align."""
+    rows = [(f"{a.emoji} {a.nickname}", a.subagent_type, a.theme) for a in plan]
+    head = ("agent", "subagent_type", "theme")
+    w0 = max((len(r[0]) for r in (head, *rows)), default=len(head[0]))
+    w1 = max((len(r[1]) for r in (head, *rows)), default=len(head[1]))
+    row = lambda a, b, c: f"{a.ljust(w0)}  {b.ljust(w1)}  {c}".rstrip()
+    lines = [row(*head), row("-" * w0, "-" * w1, "-----")]
+    lines += [row(*r) for r in rows]
+    return "\n".join(lines)

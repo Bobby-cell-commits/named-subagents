@@ -14,11 +14,11 @@
  *   named-subagents bio Magellan
  */
 import {
-  closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync,
-  renameSync, statSync, unlinkSync, writeFileSync,
+  closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync,
+  renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -26,7 +26,7 @@ import {
   Ledger, LEDGER_VERSION, PoolExhaustedError, Registry, VERSION,
   allocate, installedAgentNames, ledgerRecordIssue, ledgerStats, loadWithConfig,
   personaPreamble, planFanout, pyDumps, formatPyFloat, resolveCategory, stripGen,
-  validName, toLabels, toSwarm, toWorkflow, _hasOwn as hasOwn,
+  validName, toLabels, toSwarm, toTable, toWorkflow, _hasOwn as hasOwn,
 } from "./named_subagents.mjs";
 
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -37,10 +37,10 @@ const STATS_FLOAT_KEYS = new Set(["pct_used"]);
 // --------------------------------------------------------------------------- //
 // argv parsing (mirrors the Python argparse surface)
 // --------------------------------------------------------------------------- //
-const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config", "explain"]);
+const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config", "explain", "cwd", "force"]);
 const COMMANDS = new Set([
   "categories", "resolve", "allocate", "assign",
-  "release", "retire", "unretire", "stats", "doctor", "bio", "hook",
+  "release", "retire", "unretire", "stats", "doctor", "bio", "init", "hook",
 ]);
 const USAGE =
   "usage: named-subagents [--registry PATH] [--config PATH] "
@@ -208,8 +208,8 @@ function cmdAssign(opts) {
   // Validate --format and --count BEFORE planFanout touches the ledger — argparse
   // (choices + type=int) rejects both with exit 2 and no side effect.
   const format = opts.format || "agent";
-  if (!["agent", "labels", "workflow", "swarm"].includes(format)) {
-    die(`argument --format: invalid choice: '${format}' (choose from 'agent', 'labels', 'workflow', 'swarm')`);
+  if (!["agent", "labels", "workflow", "swarm", "table"].includes(format)) {
+    die(`argument --format: invalid choice: '${format}' (choose from 'agent', 'labels', 'workflow', 'swarm', 'table')`);
   }
   const count = parseIntStrict(opts.count, "count", 0);
   let tasks = Array.isArray(opts.task) ? opts.task : [opts.task];
@@ -228,6 +228,8 @@ function cmdAssign(opts) {
     console.log(toWorkflow(plan));
   } else if (format === "swarm") {
     console.log(toSwarm(plan));
+  } else if (format === "table") {
+    console.log(toTable(plan));
   } else { // agent
     // full Assignment JSON (agentKwargs is non-enumerable, so a spread drops it)
     console.log(pyDumps(plan.map((a) => ({ ...a })), { indent: 2 }));
@@ -560,6 +562,41 @@ function doctorChecks(opts) {
     }
   }
 
+  // 9. auto-namer hook — install status (informational) + a live self-test
+  const sp = settingsPath(opts);
+  const { data: sdata } = readSettings(sp);
+  let hooked = false;
+  for (const _ of iterOurHooks((isObj(sdata.hooks) && sdata.hooks.PreToolUse) || [])) hooked = true;
+  add("INFO", "hook-install",
+    hooked ? `registered in ${sp}`
+      : `not installed (run \`named-subagents hook install\` to enable auto-naming)`);
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) {
+    // Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
+    add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE");
+  } else {
+    try {
+      // Self-test against a THROWAWAY ledger so doctor never writes real state.
+      const hd = mkdtempSync(join(tmpdir(), "ns-doctor-"));
+      let out;
+      try {
+        out = hookMutate(
+          { tool_name: "Agent", tool_input: { description: "map auth", prompt: "go", subagent_type: "Explore" } },
+          join(hd, "led.json"));
+      } finally {
+        rmSync(hd, { recursive: true, force: true });
+      }
+      const ui = (out && out.updatedInput) || {};
+      const ok = (ui.description || "").endsWith("map auth")
+        && ui.description !== "map auth"
+        && (ui.prompt || "").includes(PERSONA_SIG);
+      add(ok ? "PASS" : "FAIL", "hook-selftest",
+        ok ? "`hook run` produces a valid nicknamed dispatch"
+          : `unexpected mutation: ${JSON.stringify(out)}`);
+    } catch (e) {
+      add("FAIL", "hook-selftest", `${e.name}: ${e.message}`);
+    }
+  }
+
   return checks;
 }
 
@@ -576,6 +613,56 @@ function cmdDoctor(opts) {
     console.log(`\n${checks.length} checks, ${failCount} failed`);
   }
   return failCount ? 1 : 0;
+}
+
+// --------------------------------------------------------------------------- //
+// init — scaffold a starter config
+// --------------------------------------------------------------------------- //
+const INIT_TEMPLATE = {
+  pins: { security: "Argus" },
+  extend: { explore: { names: ["Kupe"] } },
+  categories: {
+    starships: {
+      theme: "Star systems",
+      emoji: "🚀",
+      keywords: ["fleet", "deploy", "orchestrate"],
+      names: ["Enterprise", "Rocinante", "Serenity", "Nostromo"],
+    },
+  },
+};
+
+function initPath(opts) {
+  if (opts.path) return opts.path;
+  if (opts.cwd) return join(process.cwd(), ".named-subagents.json");
+  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  return join(base, "named-subagents", "config.json");
+}
+
+function cmdInit(opts) {
+  const path = initPath(opts);
+  if (existsSync(path) && !opts.force) {
+    console.error(`error: ${path} already exists — pass --force to overwrite.`);
+    return 1;
+  }
+  // Validate the template loads cleanly before writing (catches an edit that trips
+  // the config validator, e.g. a name colliding with the bundled registry).
+  const tmp = mkdtempSync(join(tmpdir(), "ns-init-"));
+  try {
+    const probe = join(tmp, "config.json");
+    writeFileSync(probe, JSON.stringify(INIT_TEMPLATE));
+    loadWithConfig(null, probe, false);          // throws on an invalid config
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  mkdirSync(dirname(path) || ".", { recursive: true });
+  writeFileSync(path, JSON.stringify(INIT_TEMPLATE, null, 2) + "\n");
+  const hint = opts.path ? `load it with \`--config ${path}\`.`
+    : opts.cwd ? "enable it per-project with `--cwd-config`."
+      : "the home config is picked up automatically.";
+  console.log(`wrote a starter config to ${path}\n`
+    + "  It pins a security nickname (Argus), extends the explore pool, and adds a\n"
+    + `  custom 'starships' category. Edit it to taste — ${hint}`);
+  return 0;
 }
 
 // --------------------------------------------------------------------------- //
@@ -632,7 +719,7 @@ function withLedgerLock(path, fn) {
 
 /** Map a PreToolUse event -> the hookSpecificOutput object to emit, or null to
  * pass the dispatch through. May throw on internal error (caller fails open). */
-function hookMutate(event) {
+function hookMutate(event, ledgerPath = null) {
   if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
   if (!isObj(event) || !DISPATCH_TOOLS.has(event.tool_name)) return null;
   const ti = event.tool_input;
@@ -657,7 +744,7 @@ function hookMutate(event) {
   }
   const cat = resolveCategory(reg, { role: subagentType || null, task: description || null });
 
-  const lp = hookLedgerPath();
+  const lp = ledgerPath !== null ? ledgerPath : hookLedgerPath();
   if (lp) mkdirSync(dirname(lp), { recursive: true });
   const nickname = withLedgerLock(lp, () => {
     const led = new Ledger(lp);           // loads fresh state under the lock
@@ -857,6 +944,7 @@ const HANDLERS = {
   stats: cmdStats,
   doctor: cmdDoctor,
   bio: cmdBio,
+  init: cmdInit,
   hook: cmdHook,
 };
 

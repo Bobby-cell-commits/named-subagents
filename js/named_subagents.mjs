@@ -1091,5 +1091,22 @@ export function toSwarm(plan) {
   return lines.join("\n");
 }
 
+/** A human-readable aligned table (agent · subagent_type · theme). Padding is
+ * code-point-based (NOT String.padEnd, which counts UTF-16 units) so the output
+ * is byte-identical to the Python port's str.ljust. */
+export function toTable(plan) {
+  const cpLen = (s) => [...s].length;
+  const pad = (s, w) => s + " ".repeat(Math.max(w - cpLen(s), 0));
+  const rows = plan.map((a) => [`${a.emoji} ${a.nickname}`, a.subagent_type, a.theme]);
+  const all = [["agent", "subagent_type", "theme"], ...rows];
+  const w0 = Math.max(...all.map((r) => cpLen(r[0])));
+  const w1 = Math.max(...all.map((r) => cpLen(r[1])));
+  const row = (a, b, c) => `${pad(a, w0)}  ${pad(b, w1)}  ${c}`.replace(/\s+$/, "");
+  const lines = [row("agent", "subagent_type", "theme"),
+                 row("-".repeat(w0), "-".repeat(w1), "-----")];
+  for (const r of rows) lines.push(row(...r));
+  return lines.join("\n");
+}
+
 // Internal-but-shared helper the CLI needs.
 export { hasOwn as _hasOwn };

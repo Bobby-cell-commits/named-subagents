@@ -41,6 +41,7 @@ from named_subagents import (
     resolve_category,
     to_labels,
     to_swarm,
+    to_table,
     to_workflow,
     _strip_gen,
     _valid_name,
@@ -146,6 +147,8 @@ def cmd_assign(args):
         print(to_workflow(plan))
     elif args.format == "swarm":
         print(to_swarm(plan))
+    elif args.format == "table":
+        print(to_table(plan))
     else:  # agent (default) — full Assignment JSON
         print(json.dumps([dict(a._asdict()) for a in plan], ensure_ascii=False, indent=2))
 
@@ -405,6 +408,36 @@ def _doctor_checks(args):
         except Exception as e:  # noqa: BLE001 — only a clean-run mismatch may FAIL
             add("SKIP", "parity", f"probe not comparable ({type(e).__name__}: {e})")
 
+    # 9. auto-namer hook — install status (informational) + a live self-test
+    sp = _settings_path(args)
+    sdata, _serr = _read_settings(sp)
+    _sh = sdata.get("hooks")   # guard a truthy non-dict `hooks` -> report, never crash
+    _pre = (_sh.get("PreToolUse") if isinstance(_sh, dict) else None) or []
+    hooked = next(_iter_our_hooks(_pre), None)
+    add("INFO", "hook-install",
+        f"registered in {sp}" if hooked
+        else f"not installed (run `named-subagents hook install` to enable auto-naming)")
+    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
+        # Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
+        add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE")
+    else:
+        try:
+            # Self-test against a THROWAWAY ledger so doctor never writes real state.
+            with tempfile.TemporaryDirectory() as _hd:
+                out = _hook_mutate(
+                    {"tool_name": "Agent",
+                     "tool_input": {"description": "map auth", "prompt": "go", "subagent_type": "Explore"}},
+                    ledger_path=os.path.join(_hd, "led.json"))
+            ui = (out or {}).get("updatedInput", {})
+            ok = (ui.get("description", "").endswith("map auth")
+                  and ui.get("description") != "map auth"
+                  and _PERSONA_SIG in ui.get("prompt", ""))
+            add("PASS" if ok else "FAIL", "hook-selftest",
+                "`hook run` produces a valid nicknamed dispatch" if ok
+                else f"unexpected mutation: {out}")
+        except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
+            add("FAIL", "hook-selftest", f"{type(e).__name__}: {e}")
+
     return checks
 
 
@@ -420,6 +453,65 @@ def cmd_doctor(args):
             print(f"[{c['status']}] {c['check']}{detail}")
         print(f"\n{len(checks)} checks, {fail_count} failed")
     return 1 if fail_count else 0
+
+
+# --------------------------------------------------------------------------- #
+# init — scaffold a starter config
+# --------------------------------------------------------------------------- #
+_INIT_TEMPLATE = {
+    "pins": {"security": "Argus"},
+    "extend": {"explore": {"names": ["Kupe"]}},
+    "categories": {
+        "starships": {
+            "theme": "Star systems",
+            "emoji": "🚀",
+            "keywords": ["fleet", "deploy", "orchestrate"],
+            "names": ["Enterprise", "Rocinante", "Serenity", "Nostromo"],
+        }
+    },
+}
+
+
+def _init_path(args):
+    if getattr(args, "path", None):
+        return args.path
+    if getattr(args, "cwd", False):
+        return os.path.join(os.getcwd(), ".named-subagents.json")
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "named-subagents", "config.json")
+
+
+def cmd_init(args):
+    path = _init_path(args)
+    if os.path.exists(path) and not getattr(args, "force", False):
+        print(f"error: {path} already exists — pass --force to overwrite.", file=sys.stderr)
+        return 1
+    # Validate the template loads cleanly before writing it (guards against an edit
+    # that trips the config validator — e.g. a name that collides with the bundled
+    # registry's global-uniqueness invariant).
+    fd, probe = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(_INIT_TEMPLATE, fh)
+        load_with_config(None, probe, allow_cwd=False)
+    finally:
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_INIT_TEMPLATE, ensure_ascii=False, indent=2) + "\n")
+    if getattr(args, "path", None):
+        hint = f"load it with `--config {path}`."
+    elif getattr(args, "cwd", False):
+        hint = "enable it per-project with `--cwd-config`."
+    else:
+        hint = "the home config is picked up automatically."
+    print(f"wrote a starter config to {path}\n"
+          f"  It pins a security nickname (Argus), extends the explore pool, and adds a\n"
+          f"  custom 'starships' category. Edit it to taste — {hint}")
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -451,10 +543,12 @@ def _hook_registry():
     return load_with_config(None, None, allow_cwd=False)
 
 
-def _hook_mutate(event):
+def _hook_mutate(event, ledger_path=None):
     """Map a PreToolUse event dict -> the hookSpecificOutput dict to emit, or None
-    to pass the dispatch through unchanged. May raise on internal error; the caller
-    (cmd_hook_run) fails open so a raise never breaks a dispatch."""
+    to pass the dispatch through unchanged. `ledger_path` overrides the default ledger
+    (the doctor self-test passes a temp path so it never touches real state). May raise
+    on internal error; the caller (cmd_hook_run) fails open so a raise never breaks a
+    dispatch."""
     if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
         return None
     if not isinstance(event, dict) or event.get("tool_name") not in _DISPATCH_TOOLS:
@@ -486,7 +580,7 @@ def _hook_mutate(event):
 
     cat = resolve_category(reg, role=subagent_type or None, task=description or None)
 
-    led = Ledger(_hook_ledger_path())
+    led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
     if led.path:
         os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
     with led.lock(timeout=10):             # flock (bounded): concurrent fan-out can't
@@ -757,8 +851,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="pin a stable identity for a category (repeatable; overrides config pins)")
     sg.add_argument("--avoid-installed", action="store_true",
                     help="exclude installed agent names (.claude/agents scans)")
-    sg.add_argument("--format", choices=["agent", "labels", "workflow", "swarm"],
-                    default="agent", help="output shape (default: agent JSON)")
+    sg.add_argument("--format", choices=["agent", "labels", "workflow", "swarm", "table"],
+                    default="agent", help="output shape (default: agent JSON; `table` = human-readable)")
     sg.add_argument("--bio-in-prompt", action="store_true",
                     help="include the nickname's bio line in the persona preamble")
     sg.set_defaults(func=cmd_assign)
@@ -788,6 +882,13 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("name", metavar="NAME")
     add_common_flags(sb)
     sb.set_defaults(func=cmd_bio)
+
+    si = sub.add_parser("init", help="scaffold a starter config file")
+    si.add_argument("--path", help="write to this path (default: ~/.config/named-subagents/config.json)")
+    si.add_argument("--cwd", action="store_true",
+                    help="write ./.named-subagents.json instead (the opt-in project-local config)")
+    si.add_argument("--force", action="store_true", help="overwrite an existing file")
+    si.set_defaults(func=cmd_init)
 
     sh = sub.add_parser("hook",
                         help="auto-namer: install once, nickname every subagent dispatch")

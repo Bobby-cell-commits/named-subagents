@@ -282,6 +282,57 @@ section("hook install — refuses to clobber malformed settings");
 }
 
 // --------------------------------------------------------------------------- //
+function runCli(args, envExtra = null) {
+  const env = { ...process.env };
+  delete env.NAMED_SUBAGENTS_CONFIG;
+  env.NAMED_SUBAGENTS_LEDGER = SAFE_LEDGER;
+  if (envExtra) Object.assign(env, envExtra);
+  return spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", env, timeout: 90000 });
+}
+
+section("doctor knows the auto-namer (item 1)");
+{
+  const r = runCli(["doctor"]);
+  check("doctor exits 0 when clean", r.status === 0, (r.stderr || "").slice(0, 200));
+  check("doctor reports [PASS] hook-selftest", (r.stdout || "").includes("[PASS] hook-selftest"),
+    (r.stdout || "").slice(-400));
+  check("doctor reports hook-install status", (r.stdout || "").includes("hook-install"));
+  // review fix: the kill switch is a legitimate, documented state — never a FAIL / non-zero exit
+  const rk = runCli(["doctor"], { NAMED_SUBAGENTS_HOOK_DISABLE: "1" });
+  check("doctor with kill-switch set -> exit 0 (not a FAIL)", rk.status === 0, (rk.stderr || "").slice(0, 200));
+  check("doctor kill-switch -> hook-selftest is not a FAIL",
+    !(rk.stdout || "").includes("[FAIL] hook-selftest"), (rk.stdout || "").slice(-300));
+}
+
+section("init scaffolds a valid, usable config (item 10)");
+{
+  const d = mkTmp();
+  const cfg = join(d, "config.json");
+  let r = runCli(["init", "--path", cfg]);
+  check("init exits 0 + writes the file", r.status === 0 && existsSync(cfg), (r.stderr || "").slice(0, 200));
+  let ok = false;
+  try { ok = typeof JSON.parse(readFileSync(cfg, "utf8")) === "object"; } catch { ok = false; }
+  check("init writes valid JSON", ok);
+  r = runCli(["allocate", "--category", "starships", "--count", "2", "--config", cfg]);
+  check("scaffolded config is usable (allocate from the custom category)",
+    r.status === 0 && r.stdout.trim().split(/\s+/).length === 2, (r.stderr || "").slice(0, 200));
+  r = runCli(["init", "--path", cfg]);
+  check("init refuses overwrite without --force", r.status !== 0);
+  r = runCli(["init", "--path", cfg, "--force"]);
+  check("init --force overwrites", r.status === 0, (r.stderr || "").slice(0, 200));
+  rmSync(d, { recursive: true, force: true });
+}
+
+section("assign --format table (item 10)");
+{
+  const r = runCli(["assign", "--role", "Explore", "--task", "map the router", "--count", "3", "--format", "table"]);
+  check("assign --format table exits 0", r.status === 0, (r.stderr || "").slice(0, 200));
+  check("table has the header + a themed nickname row",
+    (r.stdout || "").includes("subagent_type") && (r.stdout || "").includes("Explore"),
+    (r.stdout || "").slice(0, 200));
+}
+
+// --------------------------------------------------------------------------- //
 if (failures.length) {
   console.log(`\nRESULT: ${failures.length} FAILED -> ${JSON.stringify(failures)}`);
   process.exit(1);

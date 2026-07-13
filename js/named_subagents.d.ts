@@ -211,6 +211,7 @@ export interface LabelEntry {
 export function toLabels(plan: Assignment[]): LabelEntry[];
 export function toWorkflow(plan: Assignment[]): string;
 export function toSwarm(plan: Assignment[]): string;
+export function toTable(plan: Assignment[]): string;
 
 /** Python-json.dumps-compatible serializer (parity-load-bearing: identical
  * separators, ensure_ascii escaping, and float rendering to CPython). */
