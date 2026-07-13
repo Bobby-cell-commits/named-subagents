@@ -78,13 +78,22 @@ printf '%s' "$HEV" | NAMED_SUBAGENTS_LEDGER="$TMP/hook-js.json" $JS hook run > "
 diff -u "$TMP/py-hook.json" "$TMP/js-hook.json" > /dev/null || fail "hook run mutation differs"
 echo "  [PASS] hook run mutation identical (nickname + description + preamble)"
 
-# 8 — assign --format table (human-readable; code-point padding must match)
+# 8 — auto-namer hook: identical SubagentStart additionalContext for an identical
+#     SubagentStart event over a fresh ledger (the v0.4.2 primary path — the
+#     nickname + preamble land in the subagent's OWN context, so byte-parity matters)
+SEV='{"hook_event_name":"SubagentStart","agent_type":"Explore"}'
+printf '%s' "$SEV" | NAMED_SUBAGENTS_LEDGER="$TMP/ss-py.json" $PY hook run > "$TMP/py-ss.json"
+printf '%s' "$SEV" | NAMED_SUBAGENTS_LEDGER="$TMP/ss-js.json" $JS hook run > "$TMP/js-ss.json"
+diff -u "$TMP/py-ss.json" "$TMP/js-ss.json" > /dev/null || fail "hook run SubagentStart additionalContext differs"
+echo "  [PASS] hook run SubagentStart additionalContext identical (nickname + preamble)"
+
+# 9 — assign --format table (human-readable; code-point padding must match)
 $PY assign --role explore --task "map the auth module" --task "map the billing module" --format table > "$TMP/py-table.txt"
 $JS assign --role explore --task "map the auth module" --task "map the billing module" --format table > "$TMP/js-table.txt"
 diff -u "$TMP/py-table.txt" "$TMP/js-table.txt" > /dev/null || fail "assign --format table differs"
 echo "  [PASS] assign --format table identical"
 
-# 9 — init scaffolds a byte-identical starter config across ports
+# 10 — init scaffolds a byte-identical starter config across ports
 $PY init --path "$TMP/py-init.json" > /dev/null
 $JS init --path "$TMP/js-init.json" > /dev/null
 diff -u "$TMP/py-init.json" "$TMP/js-init.json" > /dev/null || fail "init config differs"

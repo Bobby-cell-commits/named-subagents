@@ -86,6 +86,23 @@ section("hook run — Task alias");
   rmSync(d, { recursive: true, force: true });
 }
 
+section("hook run — SubagentStart (additionalContext)");
+{
+  const d = mkTmp();
+  const env = { NAMED_SUBAGENTS_LEDGER: join(d, "led.json") };
+  const r = runHook(JSON.stringify({ hook_event_name: "SubagentStart", agent_type: "Explore" }), ["run"], env);
+  check("SubagentStart event -> exit 0", r.status === 0, (r.stderr || "").slice(0, 300));
+  let hso = {};
+  try { hso = JSON.parse(r.stdout).hookSpecificOutput; } catch { /* */ }
+  check("hookEventName == SubagentStart", (hso || {}).hookEventName === "SubagentStart", (r.stdout || "").slice(0, 200));
+  const ac = (hso || {}).additionalContext || "";
+  check("additionalContext carries the persona SIG", ac.includes(SIG), ac.slice(0, 160));
+  check("additionalContext has NO '--- YOUR TASK ---' trailer (standalone block)",
+    !ac.includes("--- YOUR TASK ---"), ac.slice(-120));
+  check("SubagentStart emits no updatedInput", !("updatedInput" in (hso || {})));
+  rmSync(d, { recursive: true, force: true });
+}
+
 section("hook run — passthrough on non-dispatch tools");
 {
   const r = runHook(payload("Bash", { command: "ls -la" }), ["run"]);
@@ -230,24 +247,47 @@ section("hook install / status / uninstall");
   check("install into absent settings -> exit 0", r.status === 0, (r.stderr || "").slice(0, 300));
   check("install created the settings file", existsSync(sp));
   let data = JSON.parse(readFileSync(sp, "utf8"));
-  let pre = (data.hooks || {}).PreToolUse || [];
-  let ours = pre.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
-  check("install registered exactly one auto-namer hook", ours.length === 1, JSON.stringify(pre).slice(0, 300));
-  if (ours.length) check("matcher targets Agent|Task", ours[0].matcher.includes("Agent") && ours[0].matcher.includes("Task"));
+  let ss = (data.hooks || {}).SubagentStart || [];
+  let ours = ss.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
+  check("install registered exactly one auto-namer hook (SubagentStart)", ours.length === 1, JSON.stringify(ss).slice(0, 300));
+  if (ours.length) check("matcher is the wildcard '*'", ours[0].matcher === "*");
+  check("install did NOT register under PreToolUse",
+    !((data.hooks || {}).PreToolUse || []).length);
 
   r = runHook("", ["status", "--settings", sp]);
   check("status exit 0 + reports installed", r.status === 0 && r.stdout.toLowerCase().includes("install"), (r.stdout || "").slice(0, 200));
 
   r = runHook("", ["install", "--settings", sp]);           // idempotent re-install
   data = JSON.parse(readFileSync(sp, "utf8"));
-  ours = data.hooks.PreToolUse.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
+  ours = data.hooks.SubagentStart.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
   check("re-install is idempotent (still exactly one)", ours.length === 1);
   check("re-install of an existing file wrote a .bak", existsSync(sp + ".bak"));
 
   r = runHook("", ["uninstall", "--settings", sp]);
   data = JSON.parse(readFileSync(sp, "utf8"));
-  ours = ((data.hooks || {}).PreToolUse || []).filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
+  ours = ((data.hooks || {}).SubagentStart || []).filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
   check("uninstall removed our hook", ours.length === 0);
+  rmSync(d, { recursive: true, force: true });
+}
+
+section("hook install — migrates a legacy PreToolUse entry");
+{
+  const d = mkTmp();
+  const sp = join(d, "settings.json");
+  // Pre-seed a pre-0.4.2 auto-namer registration under PreToolUse (marker present).
+  writeFileSync(sp, JSON.stringify({
+    hooks: { PreToolUse: [{ matcher: "Agent|Task", hooks: [{ type: "command",
+      command: `python -m named_subagents hook run --managed-by ${MARKER}` }] }] },
+  }));
+  const r = runHook("", ["install", "--settings", sp]);
+  check("install over a legacy PreToolUse entry -> exit 0", r.status === 0, (r.stderr || "").slice(0, 300));
+  const data = JSON.parse(readFileSync(sp, "utf8"));
+  const pre = (data.hooks || {}).PreToolUse || [];
+  const legacyLeft = pre.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
+  check("legacy PreToolUse auto-namer entry is gone after migrate", legacyLeft.length === 0, JSON.stringify(pre).slice(0, 200));
+  const ss = (data.hooks || {}).SubagentStart || [];
+  const ours = ss.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
+  check("a SubagentStart auto-namer entry now exists", ours.length === 1, JSON.stringify(ss).slice(0, 200));
   rmSync(d, { recursive: true, force: true });
 }
 
@@ -255,18 +295,27 @@ section("hook install — merge safety");
 {
   const d = mkTmp();
   const sp = join(d, "settings.json");
+  // An UNRELATED SubagentStart hook (no marker) must survive install AND uninstall.
   writeFileSync(sp, JSON.stringify({
-    hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo hi" }] }] },
+    hooks: { SubagentStart: [{ matcher: "*", hooks: [{ type: "command", command: "echo unrelated" }] }] },
     permissions: { allow: ["Bash"] },
   }));
   let r = runHook("", ["install", "--settings", sp]);
   check("install into populated settings -> exit 0", r.status === 0, (r.stderr || "").slice(0, 300));
   let data = JSON.parse(readFileSync(sp, "utf8"));
-  check("preserves the pre-existing Bash hook", data.hooks.PreToolUse.some((m) => m.matcher === "Bash"));
+  let ss = data.hooks.SubagentStart;
+  check("preserves the pre-existing unrelated SubagentStart hook",
+    ss.some((m) => (m.hooks || []).some((h) => (h.command || "").includes("echo unrelated"))));
+  check("adds our auto-namer SubagentStart entry",
+    ss.some((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER))));
   check("preserves unrelated top-level keys", JSON.stringify(data.permissions) === JSON.stringify({ allow: ["Bash"] }));
   runHook("", ["uninstall", "--settings", sp]);
   data = JSON.parse(readFileSync(sp, "utf8"));
-  check("uninstall leaves the unrelated Bash hook intact", data.hooks.PreToolUse.some((m) => m.matcher === "Bash"));
+  ss = data.hooks.SubagentStart;
+  check("uninstall leaves the unrelated SubagentStart hook intact",
+    ss.some((m) => (m.hooks || []).some((h) => (h.command || "").includes("echo unrelated"))));
+  check("uninstall removed our SubagentStart entry",
+    !ss.some((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER))));
   rmSync(d, { recursive: true, force: true });
 }
 

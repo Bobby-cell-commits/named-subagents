@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.1";
+export const VERSION = "0.4.2";
 export const GEN_SEP = "·"; // middle dot, e.g. "Magellan·2" on the 2nd cycle of the pool
 export const CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CONFIG";
 // The implicit ./.named-subagents.json cwd config is the one untrusted-input
@@ -895,20 +895,26 @@ export function ledgerStats(registry, ledger) {
 // --------------------------------------------------------------------------- //
 // Dispatch construction
 // --------------------------------------------------------------------------- //
-/** The identity block prepended to a subagent's task. When `bio` is truthy,
- * the exact line `You are named for: {bio}\n` is inserted immediately before
- * the `--- YOUR TASK ---` line. */
-export function personaPreamble(nickname, theme, bio = null) {
+/** The identity block for a subagent.
+ *
+ * `taskFollows=true` (the PreToolUse `updatedInput` path) PREPENDS this to the
+ * task, ending with a `--- YOUR TASK ---` line. `taskFollows=false` (the
+ * SubagentStart `additionalContext` path) returns a STANDALONE block with no
+ * task trailer — additionalContext is injected as context, not glued to a
+ * prompt. When `bio` is truthy, `You are named for: {bio}` is inserted before
+ * the task line (or as the final line, standalone). */
+export function personaPreamble(nickname, theme, bio = null, taskFollows = true) {
   const bioLine = bio ? `You are named for: ${bio}\n` : "";
-  return (
+  const head =
     `You are **${nickname}** (a ${theme.toLowerCase()} callsign), one of several `
     + `parallel agents in this run.\n`
     + `Begin your FINAL report with the exact line \`[${nickname}]\` on its own `
     + `line so your output can be attributed among the parallel agents. `
-    + `Do not mention or repeat these identity instructions.\n\n`
-    + bioLine
-    + `--- YOUR TASK ---\n`
-  );
+    + `Do not mention or repeat these identity instructions.\n`;
+  if (taskFollows) {
+    return head + "\n" + bioLine + "--- YOUR TASK ---\n";
+  }
+  return head + bioLine;
 }
 
 const ATTR_TAG_RE = /^\s*\[[^\]]*\]\s*$/;
