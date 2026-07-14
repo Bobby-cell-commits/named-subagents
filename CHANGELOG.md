@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
-## [0.4.3] — 2026-07-13
+## [0.4.3] — 2026-07-14
 
 **The auto-namer hook now themes by TASK, not just role.** In 0.4.2 the hook could
 only theme from `agent_type` — and CC's workhorse `general-purpose` role maps to one
