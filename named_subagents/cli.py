@@ -20,10 +20,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import named_subagents as ns
 from named_subagents import (
@@ -39,6 +41,7 @@ from named_subagents import (
     persona_preamble,
     plan_fanout,
     resolve_category,
+    resolve_for_hook,
     to_labels,
     to_swarm,
     to_table,
@@ -436,12 +439,29 @@ def _doctor_checks(args):
             with tempfile.TemporaryDirectory() as _hd:
                 out = _hook_subagent_start(
                     {"hook_event_name": "SubagentStart", "agent_type": "Explore"},
-                    ledger_path=os.path.join(_hd, "led.json"))
+                    ledger_path=os.path.join(_hd, "led.json"),
+                    queue_dir=os.path.join(_hd, "q"))
+                # v0.4.3: the capture -> pop -> task-theming chain (a generic role
+                # with a security task must theme by TASK, not fall to the role pool)
+                _hook_pre_capture(
+                    {"hook_event_name": "PreToolUse", "tool_name": "Agent",
+                     "session_id": "doctor-selftest",
+                     "tool_input": {"description": "security audit",
+                                    "prompt": "Audit auth for injection vulnerabilities.",
+                                    "subagent_type": "general-purpose"}},
+                    queue_dir=os.path.join(_hd, "q"))
+                out2 = _hook_subagent_start(
+                    {"hook_event_name": "SubagentStart", "session_id": "doctor-selftest",
+                     "agent_type": "general-purpose"},
+                    ledger_path=os.path.join(_hd, "led.json"),
+                    queue_dir=os.path.join(_hd, "q"))
             ac = (out or {}).get("additionalContext", "")
             ok = bool(out) and out.get("hookEventName") == "SubagentStart" and _PERSONA_SIG in ac
-            add("PASS" if ok else "FAIL", "hook-selftest",
-                "`hook run` emits a valid SubagentStart nickname context" if ok
-                else f"unexpected output: {out}")
+            ac2 = (out2 or {}).get("additionalContext", "")
+            ok2 = "guardians" in ac2      # task-themed, not the role's programmer pool
+            add("PASS" if ok and ok2 else "FAIL", "hook-selftest",
+                "`hook run` emits a valid SubagentStart nickname context (incl. task-themed capture)"
+                if ok and ok2 else f"unexpected output: {out if not ok else out2}")
         except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
             add("FAIL", "hook-selftest", f"{type(e).__name__}: {e}")
 
@@ -550,6 +570,144 @@ def _hook_registry():
     return load_with_config(None, None, allow_cwd=False)
 
 
+# ---- task hand-off queue (v0.4.3) ------------------------------------------ #
+# SubagentStart carries only `agent_type` — no task (and there is NO cross-event
+# correlation key; probe 2026-07-13). An output-free PreToolUse hook captures each
+# dispatch's task into a per-session FIFO; the SubagentStart hook pops the oldest
+# ROLE-MATCHING entry. Returning nothing from the PRE hook keeps it immune to the
+# multi-hook updatedInput clobber (claude-code#15897/#39814).
+_QUEUE_TTL_SECONDS = 30.0     # entries older than this are orphans (dispatch never started)
+
+
+def _hook_queue_dir() -> str:
+    env = os.environ.get("NAMED_SUBAGENTS_QUEUE_DIR")
+    if env:
+        return env
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    return os.path.join(base, "named-subagents", "queue")
+
+
+def _queue_path(session_id, queue_dir=None) -> str:
+    sid = session_id if isinstance(session_id, str) else ""
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80] or "nosession"
+    return os.path.join(queue_dir or _hook_queue_dir(), f"q-{sid}.jsonl")
+
+
+class _queue_lock:
+    """Bounded cross-process exclusion for queue read-modify-write, via flock on a
+    `<queue>.lock` sidecar (same idiom as Ledger.lock). Platforms without fcntl
+    degrade to lockless (matches the JS port's documented behavior)."""
+
+    def __init__(self, qpath: str):
+        self._lock_path = qpath + ".lock"
+        self._fd = None
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:
+            return self
+        deadline = time.monotonic() + 5.0
+        self._fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        while True:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("queue lock timeout")
+                time.sleep(0.005)
+
+    def __exit__(self, *exc):
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        return False
+
+
+def _hook_pre_capture(event, queue_dir=None):
+    """Push {role, task, skip, ts} for an Agent/Task dispatch onto the per-session
+    FIFO. ALWAYS returns None — this hook must stay output-free. A dispatch that is
+    already named (CLI `assign`, or a re-fire) pushes a TOMBSTONE (skip=true), never
+    nothing: SubagentStart fires unconditionally per dispatch, so a push-skip would
+    desync every sibling after it by one."""
+    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
+        return None
+    if not isinstance(event, dict) or event.get("tool_name") not in _DISPATCH_TOOLS:
+        return None
+    ti = event.get("tool_input")
+    if not isinstance(ti, dict):
+        return None
+
+    def _str(v) -> str:
+        return v if isinstance(v, str) else ""
+
+    prompt = _str(ti.get("prompt"))
+    description = _str(ti.get("description"))
+    skip = _PERSONA_SIG in prompt
+    if not skip and not prompt and description:
+        reg, _cfg = _hook_registry()
+        skip = any(description.startswith(reg.emoji(c)) for c in reg.categories)
+    entry = {
+        "role": _str(ti.get("subagent_type")),
+        "task": (description + "\n" + prompt).strip(),
+        "skip": skip,
+        "ts": time.time(),
+    }
+    qpath = _queue_path(event.get("session_id"), queue_dir)
+    os.makedirs(os.path.dirname(qpath) or ".", exist_ok=True)
+    with _queue_lock(qpath):
+        with open(qpath, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return None
+
+
+def _queue_pop(session_id, agent_type, queue_dir=None):
+    """Pop the oldest entry whose role matches `agent_type`, pruning stale orphans
+    in passing. A mismatched entry is NEVER stolen (it belongs to a sibling with a
+    different role); no match -> None (caller falls back to role theming). The file
+    is removed once drained so the state dir doesn't accumulate per-session files."""
+    qpath = _queue_path(session_id, queue_dir)
+    if not os.path.exists(qpath):
+        return None
+    popped = None
+    with _queue_lock(qpath):
+        try:
+            with open(qpath, "r", encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return None
+        now = time.time()
+        entries = []
+        for line in lines:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and now - float(e.get("ts") or 0) <= _QUEUE_TTL_SECONDS:
+                entries.append(e)
+        keep = []
+        for e in entries:
+            if popped is None and e.get("role") == agent_type:
+                popped = e
+            else:
+                keep.append(e)
+        if keep:
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(qpath) or ".",
+                                       prefix=os.path.basename(qpath) + ".", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                for e in keep:
+                    fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+            os.replace(tmp, qpath)
+        else:
+            try:
+                os.unlink(qpath)
+            except OSError:
+                pass
+    return popped
+
+
 def _hook_mutate(event, ledger_path=None):
     """Map a PreToolUse event dict -> the hookSpecificOutput dict to emit, or None
     to pass the dispatch through unchanged. `ledger_path` overrides the default ledger
@@ -604,15 +762,17 @@ def _hook_mutate(event, ledger_path=None):
     return {"hookEventName": "PreToolUse", "updatedInput": updated}
 
 
-def _hook_subagent_start(event, ledger_path=None):
+def _hook_subagent_start(event, ledger_path=None, queue_dir=None):
     """Map a SubagentStart event -> the hookSpecificOutput dict to emit, or None to
     pass through. This is the PRIMARY auto-namer path (v0.4.2): it delivers the
     nickname via `additionalContext`, which is ADDITIVE and reaches the subagent's
     own context — so it is immune to the multi-hook `updatedInput` clobber that
     silently drops the Agent-tool PreToolUse path (claude-code#15897 / #39814).
 
-    SubagentStart carries only `agent_type` (no task/description), so theming is
-    ROLE-based. `ledger_path` overrides the default (doctor passes a temp path)."""
+    v0.4.3: theming is TASK-first when the PreToolUse capture hook queued this
+    dispatch's task (see _hook_pre_capture); a tombstone (CLI-named dispatch) emits
+    nothing; queue empty / role mismatch / stale falls back to the v0.4.2 ROLE
+    theming. `ledger_path`/`queue_dir` override defaults (doctor passes temps)."""
     if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
         return None
     if not isinstance(event, dict):
@@ -620,8 +780,16 @@ def _hook_subagent_start(event, ledger_path=None):
     agent_type = event.get("agent_type")
     agent_type = agent_type if isinstance(agent_type, str) else ""
 
+    entry = _queue_pop(event.get("session_id"), agent_type, queue_dir)
+    if entry and entry.get("skip"):
+        return None                       # CLI already named this dispatch
+
     reg, _cfg = _hook_registry()
-    cat = resolve_category(reg, role=agent_type or None)
+    task = entry.get("task") if entry else None
+    if isinstance(task, str) and task:
+        cat = resolve_for_hook(reg, role=agent_type or None, task=task)
+    else:
+        cat = resolve_category(reg, role=agent_type or None)
 
     led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
     if led.path:
@@ -636,22 +804,29 @@ def _hook_subagent_start(event, ledger_path=None):
     return {"hookEventName": "SubagentStart", "additionalContext": context}
 
 
-def cmd_hook_run(args=None):
+def cmd_hook_run(args=None, argv=None):
     """Auto-namer handler invoked by Claude Code. Reads the event JSON on stdin,
     writes a hookSpecificOutput JSON on stdout, always exits 0.
 
-    Routes by `hook_event_name`: SubagentStart -> `additionalContext` (the primary,
+    Routing: `--capture` (the v0.4.3 PreToolUse registration) -> the output-free
+    task-queue capture; a SubagentStart event -> `additionalContext` (the primary,
     clobber-proof path); anything else is treated as a PreToolUse dispatch and goes
     through `_hook_mutate` (kept so a lingering legacy PreToolUse registration still
-    functions — new installs register only SubagentStart).
+    functions — new installs register capture + SubagentStart).
 
     FAIL-OPEN is the whole contract: any error is swallowed and nothing is written,
     so the dispatch proceeds unchanged. A broken namer must never break a fan-out,
     and it must never exit 2 (that would BLOCK the dispatch)."""
     try:
+        capture = ("--capture" in (argv or [])) or bool(getattr(args, "capture", False))
         event = json.loads(sys.stdin.read())
         ev = event.get("hook_event_name") if isinstance(event, dict) else None
-        out = _hook_subagent_start(event) if ev == "SubagentStart" else _hook_mutate(event)
+        if capture:
+            out = _hook_pre_capture(event)
+        elif ev == "SubagentStart":
+            out = _hook_subagent_start(event)
+        else:
+            out = _hook_mutate(event)
         if out is not None:
             sys.stdout.write(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
     except Exception:  # noqa: BLE001 — fail-open by design
@@ -668,12 +843,15 @@ def _settings_path(args) -> str:
     return os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 
 
-def _hook_command() -> str:
+def _hook_command(capture: bool = False) -> str:
     """The command Claude Code runs per dispatch. Absolute interpreter + `-m` module
     form (robust against the console script not being on the hook's PATH). The
     `--managed-by` marker is a real (ignored) CLI arg — NOT a shell comment — so
-    status/uninstall can identify our entry whether or not the command is shell-parsed."""
-    return f'"{sys.executable}" -m named_subagents hook run --managed-by {_HOOK_MARKER}'
+    status/uninstall can identify our entry whether or not the command is shell-parsed.
+    `capture=True` is the v0.4.3 PreToolUse task-capture registration; the flag also
+    distinguishes it from a LEGACY (pre-0.4.2, mutate-path) PreToolUse entry."""
+    cap = " --capture" if capture else ""
+    return f'"{sys.executable}" -m named_subagents hook run{cap} --managed-by {_HOOK_MARKER}'
 
 
 def _read_settings(sp):
@@ -723,20 +901,32 @@ def _iter_our_hooks(pre):
                 yield m, h
 
 
-def _prune_our_hooks(entries):
+def _is_capture_hook(h) -> bool:
+    """True for the v0.4.3 PreToolUse task-capture registration (ours + --capture);
+    a marker'd PreToolUse entry WITHOUT the flag is a legacy (pre-0.4.2) mutate hook."""
+    cmd = h.get("command") or "" if isinstance(h, dict) else ""
+    return _HOOK_MARKER in cmd and "--capture" in cmd
+
+
+def _prune_our_hooks(entries, only=None):
     """Strip our marker'd hooks from a hooks-array (a `hooks.<event>` list),
     preserving every unrelated block. Returns (new_entries, removed_count).
-    A non-list input passes straight through (nothing to prune)."""
+    A non-list input passes straight through (nothing to prune). `only` narrows
+    which of OUR hooks are removed (a predicate over the hook entry)."""
     if not isinstance(entries, list):
         return entries, 0
+
+    def _ours(h):
+        return (isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or "")
+                and (only is None or only(h)))
+
     removed, new = 0, []
     for m in entries:
         if not isinstance(m, dict) or not isinstance(m.get("hooks"), list):
             new.append(m)               # not a hooks block -> leave it exactly as-is
             continue
         hs = m["hooks"]
-        kept = [h for h in hs
-                if not (isinstance(h, dict) and _HOOK_MARKER in (h.get("command") or ""))]
+        kept = [h for h in hs if not _ours(h)]
         if len(kept) == len(hs):
             new.append(m)               # nothing of ours here -> untouched
             continue
@@ -763,26 +953,44 @@ def cmd_hook_install(args):
     if not isinstance(ss, list):
         print(f"error: {sp} has a non-list 'hooks.SubagentStart'; refusing to modify.", file=sys.stderr)
         return 1
+    pre = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre, list):
+        print(f"error: {sp} has a non-list 'hooks.PreToolUse'; refusing to modify.", file=sys.stderr)
+        return 1
     existed = os.path.exists(sp)
     cmd = _hook_command()
-    # v0.4.2 migration: strip any legacy PreToolUse auto-namer entry — that path is
-    # clobber-prone (claude-code#15897/#39814); SubagentStart + additionalContext
-    # replaces it. A clean install prunes nothing.
-    pre_new, pre_removed = _prune_our_hooks(hooks.get("PreToolUse"))
+    cap_cmd = _hook_command(capture=True)
+    # v0.4.2 migration: strip any LEGACY PreToolUse auto-namer entry (marker, no
+    # --capture) — that mutate path is clobber-prone (claude-code#15897/#39814).
+    # The v0.4.3 task-capture entry is output-free and NOT exposed to the clobber;
+    # it must survive this pruning, hence the `only=` predicate.
+    pre_new, pre_removed = _prune_our_hooks(pre, only=lambda h: not _is_capture_hook(h))
     if pre_removed:
-        hooks["PreToolUse"] = pre_new
-    migrated = " (migrated the legacy PreToolUse entry to SubagentStart)" if pre_removed else ""
+        hooks["PreToolUse"] = pre = pre_new
+    migrated = " (migrated the legacy PreToolUse entry)" if pre_removed else ""
+    refreshed = False
     for _m, h in _iter_our_hooks(ss):
         h["command"] = cmd              # refresh (e.g. new interpreter path); idempotent
+        refreshed = True
+    for _m, h in _iter_our_hooks(pre):
+        h["command"] = cap_cmd
+        break
+    else:
+        pre.append({"matcher": "Agent|Task",
+                    "hooks": [{"type": "command", "command": cap_cmd}]})
+    if refreshed:
         _write_settings(sp, data, backup=existed)
-        print(f"auto-namer hook already installed — refreshed the command in {sp}{migrated}")
+        print(f"auto-namer hook already installed — refreshed the commands in {sp}{migrated}")
         return 0
     ss.append({"matcher": "*", "hooks": [{"type": "command", "command": cmd}]})
     _write_settings(sp, data, backup=existed)
-    mig_line = "\n  migrated the legacy PreToolUse entry -> SubagentStart" if pre_removed else ""
-    print(f"installed the auto-namer hook in {sp}\n"
-          f"  event: SubagentStart   matcher: *\n  command: {cmd}{mig_line}\n"
-          f"New Claude Code sessions will nickname every subagent dispatch.\n"
+    mig_line = "\n  migrated the legacy PreToolUse entry" if pre_removed else ""
+    print(f"installed the auto-namer hooks in {sp}\n"
+          f"  event: SubagentStart   matcher: *\n  command: {cmd}\n"
+          f"  event: PreToolUse     matcher: Agent|Task   (task capture, output-free)\n"
+          f"  command: {cap_cmd}{mig_line}\n"
+          f"New Claude Code sessions will nickname every subagent dispatch, themed by\n"
+          f"its task when available (else by role).\n"
           f"Verify with `named-subagents hook status`.")
     return 0
 
@@ -818,11 +1026,14 @@ def cmd_hook_uninstall(args):
 def cmd_hook_status(args):
     sp = _settings_path(args)
     data, err = _read_settings(sp)
-    installed, cmd, legacy = False, None, False
+    installed, cmd, legacy, capture = False, None, False, False
     _hk = data.get("hooks") or {}
     for _m, h in _iter_our_hooks(_hk.get("SubagentStart") or []):
         installed, cmd = True, h.get("command")
     for _m, h in _iter_our_hooks(_hk.get("PreToolUse") or []):
+        if _is_capture_hook(h):
+            capture = True                  # the v0.4.3 task-capture entry
+            continue
         legacy = True                       # a pre-0.4.2 (clobber-prone) registration lingers
         if not installed:
             cmd = h.get("command")
@@ -842,12 +1053,15 @@ def cmd_hook_status(args):
             "installed": installed, "command": cmd, "ledger_path": lp,
             "ledger_exists": led_exists, "total_allocated": allocated,
             "disabled": disabled, "legacy_pretooluse": legacy,
+            "capture_installed": capture,
         }, ensure_ascii=False, indent=2))
         return 0
     print(f"settings:   {sp}" + ("  ⚠ MALFORMED JSON" if err else ""))
     print(f"installed:  {'yes' if installed else 'no'}" + ("  (event: SubagentStart)" if installed else ""))
     if cmd:
         print(f"  command:  {cmd}")
+    if installed:
+        print(f"  capture:  {'yes  (PreToolUse task capture — task-themed nicknames)' if capture else 'no  (role-themed only; re-run `hook install` to enable task theming)'}")
     if legacy:
         print("  ⚠ legacy:  a pre-0.4.2 PreToolUse entry is still present (clobber-prone);"
               " re-run `hook install` to migrate it, or `hook uninstall` to clear it")
@@ -974,6 +1188,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Ignored marker so `hook status`/`uninstall` can identify the registered command
     # (a real CLI arg, robust to shell-vs-exec, unlike a `# comment`).
     hr.add_argument("--managed-by", help=argparse.SUPPRESS, default=None)
+    hr.add_argument("--capture", action="store_true", help=argparse.SUPPRESS)
     hr.set_defaults(func=cmd_hook_run)
 
     def _hook_target_flags(sp_):
@@ -1005,7 +1220,7 @@ def main(argv=None):
     # bypassing argparse, so extra/unknown args can never turn into a blocking exit.
     argv_list = list(sys.argv[1:] if argv is None else argv)
     if argv_list[:2] == ["hook", "run"]:
-        return cmd_hook_run(None)
+        return cmd_hook_run(None, argv=argv_list[2:])
     args = build_parser().parse_args(argv_list)
     try:
         return args.func(args)

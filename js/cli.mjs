@@ -14,8 +14,8 @@
  *   named-subagents bio Magellan
  */
 import {
-  closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync,
-  renameSync, rmSync, statSync, unlinkSync, writeFileSync,
+  appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync,
+  readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
@@ -25,8 +25,8 @@ import { fileURLToPath } from "node:url";
 import {
   Ledger, LEDGER_VERSION, PoolExhaustedError, Registry, VERSION,
   allocate, installedAgentNames, ledgerRecordIssue, ledgerStats, loadWithConfig,
-  personaPreamble, planFanout, pyDumps, formatPyFloat, resolveCategory, stripGen,
-  validName, toLabels, toSwarm, toTable, toWorkflow, _hasOwn as hasOwn,
+  personaPreamble, planFanout, pyDumps, formatPyFloat, resolveCategory, resolveForHook,
+  stripGen, validName, toLabels, toSwarm, toTable, toWorkflow, _hasOwn as hasOwn,
 } from "./named_subagents.mjs";
 
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -591,18 +591,35 @@ function doctorChecks(opts) {
       // — end-to-end additionalContext delivery is verified live in the suite.
       const hd = mkdtempSync(join(tmpdir(), "ns-doctor-"));
       let out;
+      let out2;
       try {
         out = hookSubagentStart(
           { hook_event_name: "SubagentStart", agent_type: "Explore" },
-          join(hd, "led.json"));
+          join(hd, "led.json"), join(hd, "q"));
+        // v0.4.3: the capture -> pop -> task-theming chain (a generic role with a
+        // security task must theme by TASK, not fall to the role pool)
+        hookPreCapture(
+          { hook_event_name: "PreToolUse", tool_name: "Agent",
+            session_id: "doctor-selftest",
+            tool_input: { description: "security audit",
+              prompt: "Audit auth for injection vulnerabilities.",
+              subagent_type: "general-purpose" } },
+          join(hd, "q"));
+        out2 = hookSubagentStart(
+          { hook_event_name: "SubagentStart", session_id: "doctor-selftest",
+            agent_type: "general-purpose" },
+          join(hd, "led.json"), join(hd, "q"));
       } finally {
         rmSync(hd, { recursive: true, force: true });
       }
       const ac = (out && out.additionalContext) || "";
       const ok = !!out && out.hookEventName === "SubagentStart" && ac.includes(PERSONA_SIG);
-      add(ok ? "PASS" : "FAIL", "hook-selftest",
-        ok ? "`hook run` emits a valid SubagentStart nickname context"
-          : `unexpected output: ${JSON.stringify(out)}`);
+      const ac2 = (out2 && out2.additionalContext) || "";
+      const ok2 = ac2.includes("guardians");   // task-themed, not the role's programmer pool
+      add(ok && ok2 ? "PASS" : "FAIL", "hook-selftest",
+        ok && ok2
+          ? "`hook run` emits a valid SubagentStart nickname context (incl. task-themed capture)"
+          : `unexpected output: ${JSON.stringify(ok ? out2 : out)}`);
     } catch (e) {
       add("FAIL", "hook-selftest", `${e.name}: ${e.message}`);
     }
@@ -728,6 +745,103 @@ function withLedgerLock(path, fn) {
   }
 }
 
+// ---- task hand-off queue (v0.4.3) ------------------------------------------ //
+// SubagentStart carries only `agent_type` — no task (and there is NO cross-event
+// correlation key; probe 2026-07-13). An output-free PreToolUse hook captures each
+// dispatch's task into a per-session FIFO; the SubagentStart hook pops the oldest
+// ROLE-MATCHING entry. Returning nothing from the PRE hook keeps it immune to the
+// multi-hook updatedInput clobber (claude-code#15897/#39814).
+const QUEUE_TTL_SECONDS = 30.0;   // entries older than this are orphans (dispatch never started)
+
+function hookQueueDir() {
+  const env = process.env.NAMED_SUBAGENTS_QUEUE_DIR;
+  if (env) return env;
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(base, "named-subagents", "queue");
+}
+
+function queuePath(sessionId, queueDir = null) {
+  let sid = typeof sessionId === "string" ? sessionId : "";
+  sid = sid.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80) || "nosession";
+  return join(queueDir || hookQueueDir(), `q-${sid}.jsonl`);
+}
+
+/** Push {role, task, skip, ts} for an Agent/Task dispatch onto the per-session
+ * FIFO. ALWAYS returns null — this hook must stay output-free. A dispatch that is
+ * already named (CLI `assign`, or a re-fire) pushes a TOMBSTONE (skip=true), never
+ * nothing: SubagentStart fires unconditionally per dispatch, so a push-skip would
+ * desync every sibling after it by one. */
+function hookPreCapture(event, queueDir = null) {
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
+  if (!isObj(event) || !DISPATCH_TOOLS.has(event.tool_name)) return null;
+  const ti = event.tool_input;
+  if (!isObj(ti)) return null;
+  const str = (v) => (typeof v === "string" ? v : "");
+  const prompt = str(ti.prompt);
+  const description = str(ti.description);
+  let skip = prompt.includes(PERSONA_SIG);
+  if (!skip && !prompt && description) {
+    const { registry: reg } = loadWithConfig(null, null, false);
+    skip = Object.keys(reg.categories).some((c) => description.startsWith(reg.emoji(c)));
+  }
+  const entry = {
+    role: str(ti.subagent_type),
+    task: `${description}\n${prompt}`.trim(),
+    skip,
+    ts: Date.now() / 1000,
+  };
+  const qpath = queuePath(event.session_id, queueDir);
+  mkdirSync(dirname(qpath) || ".", { recursive: true });
+  withLedgerLock(qpath, () => {
+    appendFileSync(qpath, JSON.stringify(entry) + "\n");
+  });
+  return null;
+}
+
+/** Pop the oldest entry whose role matches `agentType`, pruning stale orphans in
+ * passing. A mismatched entry is NEVER stolen (it belongs to a sibling with a
+ * different role); no match -> null (caller falls back to role theming). The file
+ * is removed once drained so the state dir doesn't accumulate per-session files. */
+function queuePop(sessionId, agentType, queueDir = null) {
+  const qpath = queuePath(sessionId, queueDir);
+  if (!existsSync(qpath)) return null;
+  let popped = null;
+  withLedgerLock(qpath, () => {
+    let lines;
+    try { lines = readFileSync(qpath, "utf8").split("\n"); } catch { return; }
+    const now = Date.now() / 1000;
+    const entries = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let e;
+      try { e = JSON.parse(line); } catch { continue; }
+      if (isObj(e) && now - (Number(e.ts) || 0) <= QUEUE_TTL_SECONDS) entries.push(e);
+    }
+    const keep = [];
+    for (const e of entries) {
+      if (popped === null && e.role === agentType) popped = e;
+      else keep.push(e);
+    }
+    if (keep.length) {
+      const tmp = `${qpath}.${process.pid}.tmp`;
+      try { unlinkSync(tmp); } catch { /* not present */ }
+      const fd = openSync(tmp, "wx");
+      try {
+        writeFileSync(fd, keep.map((e) => JSON.stringify(e) + "\n").join(""));
+        closeSync(fd);
+        renameSync(tmp, qpath);
+      } catch (err) {
+        try { closeSync(fd); } catch { /* already closed */ }
+        try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+        throw err;
+      }
+    } else {
+      try { unlinkSync(qpath); } catch { /* already gone */ }
+    }
+  });
+  return popped;
+}
+
 /** Map a PreToolUse event -> the hookSpecificOutput object to emit, or null to
  * pass the dispatch through. May throw on internal error (caller fails open). */
 function hookMutate(event, ledgerPath = null) {
@@ -780,17 +894,25 @@ function hookMutate(event, ledgerPath = null) {
  * nickname via `additionalContext`, which is ADDITIVE and reaches the subagent's
  * own context — so it is immune to the multi-hook `updatedInput` clobber that
  * silently drops the Agent-tool PreToolUse path (claude-code#15897 / #39814).
- * SubagentStart carries only `agent_type` (no task/description), so theming is
- * ROLE-based. `ledgerPath` overrides the default (doctor passes a temp path). */
-function hookSubagentStart(event, ledgerPath = null) {
+ * v0.4.3: theming is TASK-first when the PreToolUse capture hook queued this
+ * dispatch's task (see hookPreCapture); a tombstone (CLI-named dispatch) emits
+ * nothing; queue empty / role mismatch / stale falls back to the v0.4.2 ROLE
+ * theming. `ledgerPath`/`queueDir` override defaults (doctor passes temps). */
+function hookSubagentStart(event, ledgerPath = null, queueDir = null) {
   if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
   if (!isObj(event)) return null;
   const agentType = typeof event.agent_type === "string" ? event.agent_type : "";
 
+  const entry = queuePop(event.session_id, agentType, queueDir);
+  if (entry && entry.skip) return null;   // CLI already named this dispatch
+
   // Never auto-load ./.named-subagents.json — the hook runs in arbitrary
   // (possibly untrusted) dirs and its output lands in the subagent's context.
   const { registry: reg } = loadWithConfig(null, null, false);
-  const cat = resolveCategory(reg, { role: agentType || null });
+  const task = entry && typeof entry.task === "string" ? entry.task : null;
+  const cat = task
+    ? resolveForHook(reg, { role: agentType || null, task })
+    : resolveCategory(reg, { role: agentType || null });
 
   const lp = ledgerPath !== null ? ledgerPath : hookLedgerPath();
   if (lp) mkdirSync(dirname(lp), { recursive: true });
@@ -807,18 +929,21 @@ function hookSubagentStart(event, ledgerPath = null) {
   return { hookEventName: "SubagentStart", additionalContext: context };
 }
 
-function cmdHookRun() {
+function cmdHookRun(argv = null) {
   // FAIL-OPEN: read the event on stdin, emit the hookSpecificOutput, ALWAYS exit
-  // 0. Routes by `hook_event_name`: SubagentStart -> additionalContext (the
-  // primary, clobber-proof path); anything else -> hookMutate (kept so a lingering
-  // legacy PreToolUse registration still functions — new installs register only
+  // 0. Routing: `--capture` (the v0.4.3 PreToolUse registration) -> the output-free
+  // task-queue capture; a SubagentStart event -> additionalContext (the primary,
+  // clobber-proof path); anything else -> hookMutate (kept so a lingering legacy
+  // PreToolUse registration still functions — new installs register capture +
   // SubagentStart). Any error -> emit nothing -> the dispatch runs with its
   // original input. A broken namer must never break a fan-out, and must never exit
   // non-zero (2 would block).
   try {
+    const capture = (argv || []).includes("--capture");
     const event = JSON.parse(readFileSync(0, "utf8"));
     const ev = isObj(event) ? event.hook_event_name : null;
-    const out = ev === "SubagentStart" ? hookSubagentStart(event) : hookMutate(event);
+    const out = capture ? hookPreCapture(event)
+      : ev === "SubagentStart" ? hookSubagentStart(event) : hookMutate(event);
     if (out !== null) process.stdout.write(pyDumps({ hookSpecificOutput: out }));
   } catch { /* fail-open by design */ }
   return 0;
@@ -831,11 +956,21 @@ function settingsPath(opts) {
   return join(homedir(), ".claude", "settings.json");
 }
 
-function hookCommand() {
+function hookCommand(capture = false) {
   // Absolute node + absolute cli.mjs path (robust against the bin not being on the
   // hook's PATH). `--managed-by` is a real (ignored) arg marker, not a shell comment.
+  // `capture=true` is the v0.4.3 PreToolUse task-capture registration; the flag also
+  // distinguishes it from a LEGACY (pre-0.4.2, mutate-path) PreToolUse entry.
   const cli = fileURLToPath(import.meta.url);
-  return `"${process.execPath}" "${cli}" hook run --managed-by ${HOOK_MARKER}`;
+  const cap = capture ? " --capture" : "";
+  return `"${process.execPath}" "${cli}" hook run${cap} --managed-by ${HOOK_MARKER}`;
+}
+
+/** True for the v0.4.3 PreToolUse task-capture registration (ours + --capture);
+ * a marker'd PreToolUse entry WITHOUT the flag is a legacy (pre-0.4.2) mutate hook. */
+function isCaptureHook(h) {
+  const cmd = isObj(h) ? h.command || "" : "";
+  return cmd.includes(HOOK_MARKER) && cmd.includes("--capture");
 }
 
 function readSettings(sp) {
@@ -879,15 +1014,18 @@ function* iterOurHooks(pre) {
 
 /** Strip our marker'd hooks from a hooks-array (a `hooks.<event>` list),
  * preserving every unrelated block. Returns [newEntries, removedCount]. A
- * non-array input passes straight through (nothing to prune). */
-function pruneOurHooks(entries) {
+ * non-array input passes straight through (nothing to prune). `only` narrows
+ * which of OUR hooks are removed (a predicate over the hook entry). */
+function pruneOurHooks(entries, only = null) {
   if (!Array.isArray(entries)) return [entries, 0];
+  const ours = (h) => isObj(h) && (h.command || "").includes(HOOK_MARKER)
+    && (only === null || only(h));
   let removed = 0;
   const next = [];
   for (const m of entries) {
     if (!isObj(m) || !Array.isArray(m.hooks)) { next.push(m); continue; }   // not a hooks block
     const hs = m.hooks;
-    const kept = hs.filter((h) => !(isObj(h) && (h.command || "").includes(HOOK_MARKER)));
+    const kept = hs.filter((h) => !ours(h));
     if (kept.length === hs.length) { next.push(m); continue; }              // nothing ours -> untouched
     removed += hs.length - kept.length;
     if (kept.length) next.push({ ...m, hooks: kept });                      // keep block with survivors
@@ -910,25 +1048,49 @@ function cmdHookInstall(opts) {
   if (!Array.isArray(data.hooks.SubagentStart)) {
     console.error(`error: ${sp} has a non-list 'hooks.SubagentStart'; refusing to modify.`); return 1;
   }
+  if (data.hooks.PreToolUse === undefined) data.hooks.PreToolUse = [];
+  if (!Array.isArray(data.hooks.PreToolUse)) {
+    console.error(`error: ${sp} has a non-list 'hooks.PreToolUse'; refusing to modify.`); return 1;
+  }
   const existed = existsSync(sp);
   const cmd = hookCommand();
-  // v0.4.2 migration: strip any legacy PreToolUse auto-namer entry — that path is
-  // clobber-prone (claude-code#15897/#39814); SubagentStart + additionalContext
-  // replaces it. A clean install prunes nothing.
-  const [preNew, preRemoved] = pruneOurHooks(data.hooks.PreToolUse);
+  const capCmd = hookCommand(true);
+  // v0.4.2 migration: strip any LEGACY PreToolUse auto-namer entry (marker, no
+  // --capture) — that mutate path is clobber-prone (claude-code#15897/#39814).
+  // The v0.4.3 task-capture entry is output-free and NOT exposed to the clobber;
+  // it must survive this pruning, hence the `only` predicate.
+  const [preNew, preRemoved] = pruneOurHooks(data.hooks.PreToolUse, (h) => !isCaptureHook(h));
   if (preRemoved) data.hooks.PreToolUse = preNew;
-  const migrated = preRemoved ? " (migrated the legacy PreToolUse entry to SubagentStart)" : "";
+  const migrated = preRemoved ? " (migrated the legacy PreToolUse entry)" : "";
+  let refreshed = false;
   for (const [, h] of iterOurHooks(data.hooks.SubagentStart)) {
     h.command = cmd;                    // refresh (e.g. new interpreter path); idempotent
+    refreshed = true;
+  }
+  let capPresent = false;
+  for (const [, h] of iterOurHooks(data.hooks.PreToolUse)) {
+    h.command = capCmd;
+    capPresent = true;
+    break;
+  }
+  if (!capPresent) {
+    data.hooks.PreToolUse.push({ matcher: "Agent|Task",
+      hooks: [{ type: "command", command: capCmd }] });
+  }
+  if (refreshed) {
     writeSettings(sp, data, existed);
-    console.log(`auto-namer hook already installed — refreshed the command in ${sp}${migrated}`);
+    console.log(`auto-namer hook already installed — refreshed the commands in ${sp}${migrated}`);
     return 0;
   }
   data.hooks.SubagentStart.push({ matcher: "*", hooks: [{ type: "command", command: cmd }] });
   writeSettings(sp, data, existed);
-  const migLine = preRemoved ? "\n  migrated the legacy PreToolUse entry -> SubagentStart" : "";
-  console.log(`installed the auto-namer hook in ${sp}\n  event: SubagentStart   matcher: *\n  command: ${cmd}${migLine}\n`
-    + "New Claude Code sessions will nickname every subagent dispatch.\n"
+  const migLine = preRemoved ? "\n  migrated the legacy PreToolUse entry" : "";
+  console.log(`installed the auto-namer hooks in ${sp}\n`
+    + `  event: SubagentStart   matcher: *\n  command: ${cmd}\n`
+    + `  event: PreToolUse     matcher: Agent|Task   (task capture, output-free)\n`
+    + `  command: ${capCmd}${migLine}\n`
+    + "New Claude Code sessions will nickname every subagent dispatch, themed by\n"
+    + "its task when available (else by role).\n"
     + "Verify with `named-subagents hook status`.");
   return 0;
 }
@@ -960,9 +1122,11 @@ function cmdHookStatus(opts) {
   let installed = false;
   let cmd = null;
   let legacy = false;
+  let capture = false;
   const hk = isObj(data.hooks) ? data.hooks : {};
   for (const [, h] of iterOurHooks(hk.SubagentStart || [])) { installed = true; cmd = h.command; }
   for (const [, h] of iterOurHooks(hk.PreToolUse || [])) {
+    if (isCaptureHook(h)) { capture = true; continue; }   // the v0.4.3 task-capture entry
     legacy = true;                       // a pre-0.4.2 (clobber-prone) registration lingers
     if (!installed) cmd = h.command;
   }
@@ -980,13 +1144,18 @@ function cmdHookStatus(opts) {
     console.log(pyDumps({
       settings_path: sp, settings_malformed: !!error, installed, command: cmd,
       ledger_path: lp, ledger_exists: ledExists, total_allocated: allocated,
-      disabled, legacy_pretooluse: legacy,
+      disabled, legacy_pretooluse: legacy, capture_installed: capture,
     }, { indent: 2 }));
     return 0;
   }
   console.log(`settings:   ${sp}${error ? "  ⚠ MALFORMED JSON" : ""}`);
   console.log(`installed:  ${installed ? "yes" : "no"}${installed ? "  (event: SubagentStart)" : ""}`);
   if (cmd) console.log(`  command:  ${cmd}`);
+  if (installed) {
+    console.log(`  capture:  ${capture
+      ? "yes  (PreToolUse task capture — task-themed nicknames)"
+      : "no  (role-themed only; re-run `hook install` to enable task theming)"}`);
+  }
   if (legacy) {
     console.log("  ⚠ legacy:  a pre-0.4.2 PreToolUse entry is still present (clobber-prone);"
       + " re-run `hook install` to migrate it, or `hook uninstall` to clear it");
@@ -1031,7 +1200,7 @@ function main() {
   // FAIL-OPEN fast path: `hook run` must NEVER exit non-zero on ANY argv. parseArgs
   // die()s (process.exit(2)) on a trailing valueless flag, and exit 2 would BLOCK the
   // dispatch — the one thing the contract forbids. Route it straight to the handler.
-  if (raw[0] === "hook" && raw[1] === "run") return cmdHookRun();
+  if (raw[0] === "hook" && raw[1] === "run") return cmdHookRun(raw.slice(2));
   const { cmd, opts } = parseArgs(raw);
   if (opts.version) {
     console.log(`named-subagents ${VERSION}`);

@@ -6,12 +6,12 @@
  * crash on bad input; a broken hook would break every subagent dispatch.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { personaPreamble } from "./named_subagents.mjs";
+import { loadWithConfig, personaPreamble, resolveForHook } from "./named_subagents.mjs";
 
 const JS_DIR = dirname(fileURLToPath(import.meta.url));
 const CLI = join(JS_DIR, "cli.mjs");
@@ -34,6 +34,7 @@ function runHook(stdin, args, envExtra = null) {
   delete env.NAMED_SUBAGENTS_CONFIG;
   delete env.NAMED_SUBAGENTS_HOOK_DISABLE;
   env.NAMED_SUBAGENTS_LEDGER = SAFE_LEDGER;
+  env.NAMED_SUBAGENTS_QUEUE_DIR = join(dirname(SAFE_LEDGER), "queue");
   if (envExtra) Object.assign(env, envExtra);   // explicit ledger/override wins
   return spawnSync(process.execPath, [CLI, "hook", ...args],
     { input: stdin, encoding: "utf8", env, timeout: 90000 });
@@ -100,6 +101,137 @@ section("hook run — SubagentStart (additionalContext)");
   check("additionalContext has NO '--- YOUR TASK ---' trailer (standalone block)",
     !ac.includes("--- YOUR TASK ---"), ac.slice(-120));
   check("SubagentStart emits no updatedInput", !("updatedInput" in (hso || {})));
+  rmSync(d, { recursive: true, force: true });
+}
+
+// --------------------------------------------------------------------------- //
+section("resolveForHook — task-first for generic roles (v0.4.3)");
+{
+  const { registry: reg } = loadWithConfig(null, null, false);
+  const SEC_TASK = "audit auth.py for SQL injection and security vulnerabilities";
+  check("generic role + security task -> security (task wins)",
+    resolveForHook(reg, { role: "general-purpose", task: SEC_TASK }) === "security");
+  check("generic role + keyword-free task -> code (role fallback)",
+    resolveForHook(reg, { role: "general-purpose", task: "qzx qzx qzx" }) === "code");
+  check("specific role (Explore) + security task -> explore (role stays first)",
+    resolveForHook(reg, { role: "Explore", task: SEC_TASK }) === "explore");
+  check("unknown custom role + docs task -> docs (task rescues the default-pool collapse)",
+    resolveForHook(reg, { role: "security-reviewer", task: "write the README section" }) === "docs");
+  check("no role, no task -> default", resolveForHook(reg) === "default");
+}
+
+// --------------------------------------------------------------------------- //
+section("hook run --capture — output-free PreToolUse queue capture (v0.4.3)");
+
+function qEntries(qdir, session) {
+  const qp = join(qdir, `q-${session}.jsonl`);
+  if (!existsSync(qp)) return null;
+  return readFileSync(qp, "utf8").split("\n").filter((x) => x.trim()).map((x) => JSON.parse(x));
+}
+function capturePayload(session, prompt, description = "task desc", role = "general-purpose") {
+  return JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Agent",
+    session_id: session, tool_input: { description, prompt, subagent_type: role } });
+}
+
+{
+  const d = mkTmp();
+  const env = { NAMED_SUBAGENTS_LEDGER: join(d, "led.json"), NAMED_SUBAGENTS_QUEUE_DIR: join(d, "q") };
+  let r = runHook(capturePayload("s1", "Audit the auth module."), ["run", "--capture"], env);
+  check("capture exits 0", r.status === 0, (r.stderr || "").slice(0, 300));
+  check("capture is OUTPUT-FREE (no stdout -> immune to updatedInput clobber)",
+    !(r.stdout || "").trim(), (r.stdout || "").slice(0, 200));
+  let ents = qEntries(env.NAMED_SUBAGENTS_QUEUE_DIR, "s1");
+  check("capture pushed one queue entry", !!ents && ents.length === 1, JSON.stringify(ents));
+  if (ents && ents.length) {
+    check("entry carries role + task (description + prompt)",
+      ents[0].role === "general-purpose"
+      && ents[0].task.includes("task desc") && ents[0].task.includes("Audit the auth module."));
+    check("entry is not a tombstone", ents[0].skip === false);
+    check("entry has a numeric ts", typeof ents[0].ts === "number");
+  }
+  // tombstone: an already-named (CLI-assigned) dispatch still pushes, marked skip
+  r = runHook(capturePayload("s1", `You are **Kip**, one of several ${SIG}\ndo x`), ["run", "--capture"], env);
+  ents = qEntries(env.NAMED_SUBAGENTS_QUEUE_DIR, "s1");
+  check("SIG-carrying dispatch pushes a TOMBSTONE (skip=true), never a push-skip",
+    !!ents && ents.length === 2 && ents[1].skip === true, JSON.stringify(ents));
+  // non-dispatch tools + kill switch leave no trace
+  r = runHook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash",
+    session_id: "s-bash", tool_input: { command: "ls" } }), ["run", "--capture"], env);
+  check("non-dispatch tool -> exit 0, nothing queued",
+    r.status === 0 && qEntries(env.NAMED_SUBAGENTS_QUEUE_DIR, "s-bash") === null);
+  r = runHook(capturePayload("s-off", "x"), ["run", "--capture"],
+    { ...env, NAMED_SUBAGENTS_HOOK_DISABLE: "1" });
+  check("kill switch -> exit 0, nothing queued",
+    r.status === 0 && qEntries(env.NAMED_SUBAGENTS_QUEUE_DIR, "s-off") === null);
+  // fail-open
+  r = runHook("not json {{{", ["run", "--capture"], env);
+  check("capture fail-open on garbage stdin (exit 0)", r.status === 0, (r.stderr || "").slice(0, 200));
+  const blocker = join(d, "iam-a-file");
+  writeFileSync(blocker, "x");
+  r = runHook(capturePayload("s2", "x"), ["run", "--capture"],
+    { ...env, NAMED_SUBAGENTS_QUEUE_DIR: join(blocker, "q") });
+  check("capture fail-open on unwritable queue dir (exit 0)", r.status === 0, (r.stderr || "").slice(0, 200));
+  rmSync(d, { recursive: true, force: true });
+}
+
+// --------------------------------------------------------------------------- //
+section("hook run — SubagentStart pops the queue: task-theming (v0.4.3)");
+
+function ssEvent(session, agentType = "general-purpose", agentId = "a1") {
+  return JSON.stringify({ hook_event_name: "SubagentStart", session_id: session,
+    agent_id: agentId, agent_type: agentType });
+}
+function ssContext(r) {
+  if (!r.stdout || !r.stdout.trim()) return null;
+  try { return JSON.parse(r.stdout).hookSpecificOutput.additionalContext; } catch { return null; }
+}
+
+{
+  const d = mkTmp();
+  const env = { NAMED_SUBAGENTS_LEDGER: join(d, "led.json"), NAMED_SUBAGENTS_QUEUE_DIR: join(d, "q") };
+  const SEC_TASK = "audit auth.py for SQL injection and security vulnerabilities";
+  // full pipeline: generic role + security task -> guardians (not programmers)
+  runHook(capturePayload("t1", "Audit auth.py for SQL injection and security vulnerabilities.",
+    "security audit"), ["run", "--capture"], env);
+  let r = runHook(ssEvent("t1"), ["run"], env);
+  check("captured task themes the SS nickname (security -> guardians pool)",
+    (ssContext(r) || "").includes("guardians & sentinels"), (ssContext(r) || "").slice(0, 160));
+  const drained = qEntries(env.NAMED_SUBAGENTS_QUEUE_DIR, "t1");
+  check("queue entry consumed (file removed when drained)", drained === null || drained.length === 0);
+  // role-matched pop: SS arrival order permuted vs push order
+  runHook(capturePayload("t2", "Find where parse_config is defined.", "explore probe", "Explore"),
+    ["run", "--capture"], env);
+  runHook(capturePayload("t2", "Write the README section for storage.py.", "docs task"),
+    ["run", "--capture"], env);
+  const rGp = runHook(ssEvent("t2", "general-purpose"), ["run"], env);
+  const rEx = runHook(ssEvent("t2", "Explore"), ["run"], env);
+  check("role-matched pop: general-purpose SS skips the Explore entry (docs task themes it)",
+    (ssContext(rGp) || "").includes("writers & authors"), (ssContext(rGp) || "").slice(0, 160));
+  check("role-matched pop: Explore SS gets its own entry (role stays first for specific roles)",
+    (ssContext(rEx) || "").includes("explorers & navigators"), (ssContext(rEx) || "").slice(0, 160));
+  // tombstone pop -> SS emits nothing (CLI already named it); queue stays aligned
+  runHook(capturePayload("t3", `You are **Kip**, one of several ${SIG}\ndo x`), ["run", "--capture"], env);
+  runHook(capturePayload("t3", "Audit auth for injection.", "sec"), ["run", "--capture"], env);
+  const r1 = runHook(ssEvent("t3", "general-purpose", "a1"), ["run"], env);
+  const r2 = runHook(ssEvent("t3", "general-purpose", "a2"), ["run"], env);
+  check("tombstone pop -> SS is silent for the CLI-named dispatch",
+    r1.status === 0 && ssContext(r1) === null, (r1.stdout || "").slice(0, 160));
+  check("sibling after the tombstone still gets ITS task's theme (no desync)",
+    (ssContext(r2) || "").includes("guardians & sentinels"), (ssContext(r2) || "").slice(0, 160));
+  // TTL: a stale orphan is pruned, SS falls back to role theming
+  mkdirSync(join(d, "q"), { recursive: true });
+  writeFileSync(join(d, "q", "q-t4.jsonl"),
+    JSON.stringify({ role: "general-purpose", task: SEC_TASK, skip: false, ts: 1.0 }) + "\n");
+  r = runHook(ssEvent("t4"), ["run"], env);
+  check("stale orphan entry is TTL-pruned -> role fallback (programmers, not guardians)",
+    (ssContext(r) || "").includes("programmers & computing pioneers"), (ssContext(r) || "").slice(0, 160));
+  // empty queue / no session_id -> v0.4.2 role fallback unchanged
+  r = runHook(ssEvent("t5-nothing"), ["run"], env);
+  check("empty queue -> role fallback still names",
+    (ssContext(r) || "").includes("programmers & computing pioneers"));
+  r = runHook(JSON.stringify({ hook_event_name: "SubagentStart", agent_type: "Explore" }), ["run"], env);
+  check("SS event without session_id -> still names by role (v0.4.2 behavior)",
+    (ssContext(r) || "").includes("explorers & navigators"));
   rmSync(d, { recursive: true, force: true });
 }
 
@@ -251,8 +383,15 @@ section("hook install / status / uninstall");
   let ours = ss.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
   check("install registered exactly one auto-namer hook (SubagentStart)", ours.length === 1, JSON.stringify(ss).slice(0, 300));
   if (ours.length) check("matcher is the wildcard '*'", ours[0].matcher === "*");
-  check("install did NOT register under PreToolUse",
-    !((data.hooks || {}).PreToolUse || []).length);
+  // v0.4.3: install ALSO registers the output-free PreToolUse task-capture hook
+  const pre = (data.hooks || {}).PreToolUse || [];
+  const cap = pre.filter((m) => (m.hooks || []).some(
+    (h) => (h.command || "").includes(MARKER) && (h.command || "").includes("--capture")));
+  check("install registered exactly one task-capture hook (PreToolUse --capture)",
+    cap.length === 1, JSON.stringify(pre).slice(0, 300));
+  if (cap.length) {
+    check("capture matcher targets dispatch tools (Agent|Task)", cap[0].matcher === "Agent|Task");
+  }
 
   r = runHook("", ["status", "--settings", sp]);
   check("status exit 0 + reports installed", r.status === 0 && r.stdout.toLowerCase().includes("install"), (r.stdout || "").slice(0, 200));
@@ -283,8 +422,12 @@ section("hook install — migrates a legacy PreToolUse entry");
   check("install over a legacy PreToolUse entry -> exit 0", r.status === 0, (r.stderr || "").slice(0, 300));
   const data = JSON.parse(readFileSync(sp, "utf8"));
   const pre = (data.hooks || {}).PreToolUse || [];
-  const legacyLeft = pre.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
+  const legacyLeft = pre.filter((m) => (m.hooks || []).some(
+    (h) => (h.command || "").includes(MARKER) && !(h.command || "").includes("--capture")));
   check("legacy PreToolUse auto-namer entry is gone after migrate", legacyLeft.length === 0, JSON.stringify(pre).slice(0, 200));
+  const cap = pre.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes("--capture")));
+  check("the v0.4.3 task-capture entry replaced it (marker + --capture)",
+    cap.length === 1, JSON.stringify(pre).slice(0, 200));
   const ss = (data.hooks || {}).SubagentStart || [];
   const ours = ss.filter((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER)));
   check("a SubagentStart auto-namer entry now exists", ours.length === 1, JSON.stringify(ss).slice(0, 200));
@@ -316,6 +459,9 @@ section("hook install — merge safety");
     ss.some((m) => (m.hooks || []).some((h) => (h.command || "").includes("echo unrelated"))));
   check("uninstall removed our SubagentStart entry",
     !ss.some((m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER))));
+  check("uninstall removed the task-capture PreToolUse entry too",
+    !((data.hooks || {}).PreToolUse || []).some(
+      (m) => (m.hooks || []).some((h) => (h.command || "").includes(MARKER))));
   rmSync(d, { recursive: true, force: true });
 }
 

@@ -87,6 +87,21 @@ printf '%s' "$SEV" | NAMED_SUBAGENTS_LEDGER="$TMP/ss-js.json" $JS hook run > "$T
 diff -u "$TMP/py-ss.json" "$TMP/js-ss.json" > /dev/null || fail "hook run SubagentStart additionalContext differs"
 echo "  [PASS] hook run SubagentStart additionalContext identical (nickname + preamble)"
 
+# 8b — v0.4.3 task-theming: identical capture -> pop -> additionalContext chain for
+#      an identical PreToolUse+SubagentStart event pair over fresh ledgers/queues
+#      (a generic role with a security task must theme by TASK in BOTH ports)
+CEV='{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"parity","tool_input":{"description":"security audit","prompt":"Audit auth for injection vulnerabilities.","subagent_type":"general-purpose"}}'
+PEV='{"hook_event_name":"SubagentStart","session_id":"parity","agent_type":"general-purpose"}'
+printf '%s' "$CEV" | NAMED_SUBAGENTS_LEDGER="$TMP/cap-py.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/q-py" $PY hook run --capture > "$TMP/py-cap.out"
+printf '%s' "$CEV" | NAMED_SUBAGENTS_LEDGER="$TMP/cap-js.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/q-js" $JS hook run --capture > "$TMP/js-cap.out"
+[ -s "$TMP/py-cap.out" ] && fail "python hook run --capture is not output-free"
+[ -s "$TMP/js-cap.out" ] && fail "js hook run --capture is not output-free"
+printf '%s' "$PEV" | NAMED_SUBAGENTS_LEDGER="$TMP/cap-py.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/q-py" $PY hook run > "$TMP/py-task.json"
+printf '%s' "$PEV" | NAMED_SUBAGENTS_LEDGER="$TMP/cap-js.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/q-js" $JS hook run > "$TMP/js-task.json"
+diff -u "$TMP/py-task.json" "$TMP/js-task.json" > /dev/null || fail "task-themed additionalContext differs"
+grep -q "guardians" "$TMP/py-task.json" || fail "capture->pop chain did not task-theme (expected guardians)"
+echo "  [PASS] v0.4.3 capture -> pop -> task-themed additionalContext identical"
+
 # 9 — assign --format table (human-readable; code-point padding must match)
 $PY assign --role explore --task "map the auth module" --task "map the billing module" --format table > "$TMP/py-table.txt"
 $JS assign --role explore --task "map the auth module" --task "map the billing module" --format table > "$TMP/js-table.txt"

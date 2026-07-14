@@ -20,7 +20,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const VERSION = "0.4.2";
+export const VERSION = "0.4.3";
 export const GEN_SEP = "·"; // middle dot, e.g. "Magellan·2" on the 2nd cycle of the pool
 export const CONFIG_ENV_VAR = "NAMED_SUBAGENTS_CONFIG";
 // The implicit ./.named-subagents.json cwd config is the one untrusted-input
@@ -474,6 +474,23 @@ export function resolveCategory(registry, { role = null, task = null, category =
     if (byKw) return byKw;
   }
   return "default";
+}
+
+// Roles that say nothing about the task ("general-purpose" is CC's workhorse type):
+// in the auto-namer hook, these fall through to task-keyword theming so a fan-out
+// isn't pinned to one pool by its role alone.
+export const GENERIC_ROLES = new Set(["general-purpose", "worker"]);
+
+/** Hook-path resolution (v0.4.3): task-first for GENERIC_ROLES, role-first for
+ * specific roles (an informative role like `Explore` still wins), and a task
+ * fallback for unknown custom roles (which would otherwise collapse into the
+ * 'default' pool). */
+export function resolveForHook(registry, { role = null, task = null } = {}) {
+  const roleL = (role || "").trim().toLowerCase();
+  const byRole = role ? registry.bySubagentType(role) : null;
+  const byTask = task ? registry.byKeyword(task) : null;
+  if (GENERIC_ROLES.has(roleL)) return byTask || byRole || "default";
+  return byRole || byTask || "default";
 }
 
 // --------------------------------------------------------------------------- //
