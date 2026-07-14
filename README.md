@@ -85,28 +85,26 @@ captured task is available. `additionalContext` is **additive** — when several
 hooks fire, each one's context is appended and none clobbers the others — so the
 nickname reaches the subagent even alongside your own hooks.
 
-**Why SubagentStart, not PreToolUse.** An earlier version rewrote the dispatch via a
-`PreToolUse` hook returning `updatedInput`. Claude Code **silently drops**
-`updatedInput` for the `Agent` tool when more than one PreToolUse hook runs
+**Why this shape (and not `updatedInput`).** 0.4.0/0.4.1 rewrote the dispatch via a
+`PreToolUse` hook returning `updatedInput` — which Claude Code **silently drops** for
+the `Agent` tool when more than one PreToolUse hook runs
 ([claude-code#15897](https://github.com/anthropics/claude-code/issues/15897),
-[#39814](https://github.com/anthropics/claude-code/issues/39814)) — so a user with
-other hooks got no nickname while the ledger still burned names. `additionalContext`
-is additive and reaches the subagent directly, so it is robust under multiple hooks.
-(The v0.4.3 capture hook is safe here: it returns **nothing**, so it has no
-`updatedInput` to clobber.) The legacy PreToolUse path is still handled by
-`hook run`, and `hook install` **migrates** any pre-0.4.2 registration.
+[#39814](https://github.com/anthropics/claude-code/issues/39814)). Symptom: the
+ledger advances but subagents show no nickname. Both current hooks are immune —
+the capture hook returns **nothing**, and `additionalContext` is additive. If you
+installed < 0.4.2, re-run `named-subagents hook install`: it migrates the legacy
+entry (`hook status` flags a lingering one with `⚠ legacy`).
 
-**Honest limits.** Claude Code has no per-instance display-name field, so the *type*
+**Honest limits.** Claude Code has no per-instance display-name field: the *type*
 label (`Explore`) is unchanged and the nickname rides inside the subagent's context,
-not as a UI badge. The hook themes by **task when available, else role**:
-`SubagentStart` itself carries only `agent_type`, and there is no cross-event
-correlation key, so the capture queue pairs dispatches to subagents by FIFO order +
-role matching — validated live on Claude Code 2.1.207 (including batched event
-orderings), but in a same-role fan-out of *different-category* tasks a reordered
-start could in principle swap two siblings' themes (each still gets a distinct,
-validly-themed name). The `[Hudson]` self-tag in the agent's reply is best-effort —
-an agent may ignore the preamble. The hook **fails open**: any error, or a future
-event rename, degrades to a normal un-named dispatch, never a broken one.
+not as a UI badge. There is no cross-event correlation key, so the queue pairs
+dispatches to subagents by FIFO order + role matching — validated live on Claude
+Code 2.1.207 (including batched event orderings), though in a same-role fan-out of
+*different-category* tasks a reordered start could in principle swap two siblings'
+themes (each still gets a distinct, validly-themed name). The `[Hudson]` self-tag in
+the agent's reply is best-effort — an agent may ignore the preamble. The hook
+**fails open**: any error, or a future event rename, degrades to a normal un-named
+dispatch, never a broken one.
 
 **Safety.** `hook run` never exits non-zero (a broken namer must never break your
 fan-out), never changes your permission posture (it returns only `additionalContext`,
@@ -117,27 +115,16 @@ only ever add or remove their own entry.
 | Env var | Effect |
 |---|---|
 | `NAMED_SUBAGENTS_LEDGER` | ledger path (default `~/.local/state/named-subagents/hook-ledger.json`) |
-| `NAMED_SUBAGENTS_HOOK_DISABLE=1` | pause the hook (passthrough) without uninstalling |
+| `NAMED_SUBAGENTS_QUEUE_DIR` | task-queue dir (default `~/.local/state/named-subagents/queue/`; per-session files, self-clean) |
+| `NAMED_SUBAGENTS_HOOK_DISABLE=1` | pause the hooks (passthrough) without uninstalling |
 | `NAMED_SUBAGENTS_HOOK_BIO=1` | add the figure's one-line bio to the preamble |
 
-> **One port per ledger.** The Python and JS hooks work identically but guard the
-> ledger with different lock primitives (`flock` vs an `O_EXCL` lockfile). Install
-> one runtime's hook per machine — or, if you really want both, point them at
-> separate ledgers via `NAMED_SUBAGENTS_LEDGER`. Sharing one ledger across both
-> ports still fails open (worst case: a dispatch goes un-named), never corrupt.
-
-### Troubleshooting
-
-**Symptom: the ledger advances but subagents show no nickname.** You're on a
-pre-0.4.2 install that registered a `PreToolUse` hook returning `updatedInput` —
-and Claude Code **silently drops** that field for the `Agent` tool when another
-PreToolUse hook also runs
-([#15897](https://github.com/anthropics/claude-code/issues/15897) /
-[#39814](https://github.com/anthropics/claude-code/issues/39814)), so the name
-never reaches the subagent even though the ledger keeps burning names. **Fix:**
-upgrade to ≥ 0.4.2 and re-run `named-subagents hook install` — it migrates the
-legacy entry to a `SubagentStart` hook (additive `additionalContext`, immune to
-the clobber). `hook status` flags any lingering legacy entry with a `⚠ legacy` line.
+> **One port per machine.** The Python and JS hooks work identically but guard the
+> ledger and task queue with different lock primitives (`flock` vs an `O_EXCL`
+> lockfile). Install one runtime's hooks per machine — or, if you really want both,
+> point them at separate state via `NAMED_SUBAGENTS_LEDGER` /
+> `NAMED_SUBAGENTS_QUEUE_DIR`. Sharing state across both ports still fails open
+> (worst case: a dispatch goes un-named or falls back to role theming), never corrupt.
 
 ### For Claude Code — read this and run it
 
@@ -159,10 +146,11 @@ this. It is safe: idempotent, backs up `settings.json`, and fails open.
    printf '{"hook_event_name":"SubagentStart","agent_type":"Explore"}' \
      | named-subagents hook run
    ```
-   `status` must show `installed:  yes  (event: SubagentStart)`. The `hook run`
-   line must print JSON whose `hookSpecificOutput.additionalContext` contains a
-   nickname line (e.g. `You are **Hudson** (an explorers & navigators callsign)…`).
-   If both hold, the install is working.
+   `status` must show `installed:  yes  (event: SubagentStart)` and a
+   `capture:  yes` line (the task-theming half). The `hook run` line must print
+   JSON whose `hookSpecificOutput.additionalContext` contains a nickname line
+   (e.g. `You are **Hudson** (an explorers & navigators callsign)…`).
+   If all hold, the install is working.
 4. **Tell the user**: hooks load at session start, so the auto-namer takes effect in
    **new** Claude Code sessions — they should open a fresh session to see nicknamed
    fan-outs. To pause: `export NAMED_SUBAGENTS_HOOK_DISABLE=1`. To remove:
@@ -354,7 +342,8 @@ re-run-safe (the same reason Claude Code Workflows ban `Math.random`).
 ## Routing is best-effort
 
 Category resolution is `explicit category > subagent_type match > task-keyword
-match > default`. The keyword layer is a **heuristic, not a classifier** — for
+match > default` (the auto-namer hook puts the *task* first for generic roles —
+see above). The keyword layer is a **heuristic, not a classifier** — for
 guaranteed themes pass `category=` or `role=` explicitly.
 
 ## Where this sits (community landscape)
@@ -369,11 +358,11 @@ an **identity layer that composes _under_** orchestrators like `claude-swarm`,
 ## Tests
 
 ```bash
-python3 tests/test_named_subagents.py     # 266 checks incl. state-machine campaigns
-node js/test_named_subagents.mjs          # 279 checks (mirror suite)
-python3 tests/test_hook.py                # auto-namer: fail-open, concurrency, install merge-safety
+python3 tests/test_named_subagents.py     # library suite incl. state-machine campaigns
+node js/test_named_subagents.mjs          # twin suite (mirror-kept)
+python3 tests/test_hook.py                # auto-namer: task capture, fail-open, concurrency, install merge-safety
 node js/test_hook.mjs                     # auto-namer mirror suite
-scripts/parity_check.sh                   # cross-language gate (both runtimes, incl. hook run)
+scripts/parity_check.sh                   # cross-language gate (both runtimes, incl. the capture→pop chain)
 ```
 
 CI runs Python 3.8/3.12/3.13, Node 18/20/22, install smokes for both package

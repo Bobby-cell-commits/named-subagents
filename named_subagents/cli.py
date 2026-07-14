@@ -417,10 +417,16 @@ def _doctor_checks(args):
     _sh = sdata.get("hooks")
     _sh = _sh if isinstance(_sh, dict) else {}
     hooked = next(_iter_our_hooks(_sh.get("SubagentStart") or []), None)
-    legacy = next(_iter_our_hooks(_sh.get("PreToolUse") or []), None)
+    legacy, capture = False, False
+    for _m, h in _iter_our_hooks(_sh.get("PreToolUse") or []):
+        if _is_capture_hook(h):
+            capture = True              # the v0.4.3 task-capture entry, NOT legacy
+        else:
+            legacy = True
     if hooked:
         add("INFO", "hook-install",
-            f"registered (SubagentStart) in {sp}"
+            f"registered (SubagentStart{' + task capture' if capture else ''}) in {sp}"
+            + ("" if capture else "  ⚠ task capture not registered — re-run `hook install` for task theming")
             + ("  ⚠ legacy PreToolUse entry also present — re-run `hook install` to migrate" if legacy else ""))
     elif legacy:
         add("INFO", "hook-install",
@@ -1184,7 +1190,8 @@ def build_parser() -> argparse.ArgumentParser:
     hsub = sh.add_subparsers(dest="hook_cmd", required=True)
 
     hr = hsub.add_parser("run",
-                         help="(invoked by Claude Code) name a dispatch from a PreToolUse event on stdin")
+                         help="(invoked by Claude Code) handle a hook event from stdin — "
+                              "PreToolUse task capture (--capture) or SubagentStart naming")
     # Ignored marker so `hook status`/`uninstall` can identify the registered command
     # (a real CLI arg, robust to shell-vs-exec, unlike a `# comment`).
     hr.add_argument("--managed-by", help=argparse.SUPPRESS, default=None)

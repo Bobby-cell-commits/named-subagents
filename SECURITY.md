@@ -10,7 +10,8 @@ a public issue. You should receive a response within a week.
 
 | Version | Supported |
 |---|---|
-| 0.2.x | ✅ |
+| 0.4.x | ✅ |
+| 0.2.x–0.3.x | ⚠ upgrade — 0.4.0/0.4.1's auto-namer is silently broken under multiple hooks; ≥ 0.4.2 fixes delivery |
 | < 0.2 | ❌ (never published) |
 
 ## Threat model
@@ -24,6 +25,7 @@ prompt text. **It performs no network I/O anywhere.** The surfaces that matter:
 | bundled `registry.json` | trusted (ships with the package) | still fully validated on load |
 | user config (custom themes, pins) | **untrusted** | strict sanitization of *every* field that reaches a prompt/label — names, themes, emoji, blurbs, bios — plus global-uniqueness re-validation; loud failure, never silent drop. The project-local `./.named-subagents.json` (the only *ambient* config source) is **opt-in** as of 0.3 — see below |
 | ledger file | semi-trusted local state | malformed fields coerced to safe defaults (never crashes); exclusive-create temp + atomic rename (no symlink follow); **single-writer** — see below |
+| task-capture queue (`~/.local/state/named-subagents/queue/`, since 0.4.3) | semi-trusted local state | per-session filename derived from a **sanitized** `session_id` (`[A-Za-z0-9_.-]`, ≤ 80 chars — no traversal); entries parsed defensively (malformed lines skipped); 30s TTL; drained files removed; lock-serialized read-modify-write; task text is only ever fed to the keyword matcher, never executed or interpolated raw |
 | `.claude/agents/*.md` scan | **untrusted** | regex-only extraction, first 4 KB per file, non-regular files (FIFO/device) skipped, no YAML parser, read-only |
 | persona preamble → agent prompt | output surface | only sanitized names/themes/bios can be interpolated |
 | supply chain | — | **zero runtime dependencies** in both the Python and JS ports |

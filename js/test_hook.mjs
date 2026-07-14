@@ -497,6 +497,17 @@ section("doctor knows the auto-namer (item 1)");
   check("doctor with kill-switch set -> exit 0 (not a FAIL)", rk.status === 0, (rk.stderr || "").slice(0, 200));
   check("doctor kill-switch -> hook-selftest is not a FAIL",
     !(rk.stdout || "").includes("[FAIL] hook-selftest"), (rk.stdout || "").slice(-300));
+  // v0.4.3: a CLEAN install (SubagentStart + capture) must NOT be flagged as legacy —
+  // the capture entry lives under PreToolUse but carries --capture, not the mutate path
+  const home = mkTmp();
+  const sp = join(home, ".claude", "settings.json");
+  runHook("", ["install", "--settings", sp]);
+  const rc = runCli(["doctor"], { HOME: home });
+  check("doctor on a clean v0.4.3 install -> no false legacy warning",
+    !(rc.stdout || "").includes("legacy"), (rc.stdout || "").slice(-400));
+  check("doctor hook-install reports the task-capture registration",
+    (rc.stdout || "").includes("task capture"), (rc.stdout || "").slice(-400));
+  rmSync(home, { recursive: true, force: true });
 }
 
 section("init scaffolds a valid, usable config (item 10)");

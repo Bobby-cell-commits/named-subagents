@@ -569,10 +569,15 @@ function doctorChecks(opts) {
   let hooked = false;
   for (const _ of iterOurHooks(sh.SubagentStart || [])) hooked = true;
   let legacy = false;
-  for (const _ of iterOurHooks(sh.PreToolUse || [])) legacy = true;
+  let capture = false;
+  for (const [, h] of iterOurHooks(sh.PreToolUse || [])) {
+    if (isCaptureHook(h)) capture = true;   // the v0.4.3 task-capture entry, NOT legacy
+    else legacy = true;
+  }
   if (hooked) {
     add("INFO", "hook-install",
-      `registered (SubagentStart) in ${sp}`
+      `registered (SubagentStart${capture ? " + task capture" : ""}) in ${sp}`
+      + (capture ? "" : "  ⚠ task capture not registered — re-run `hook install` for task theming")
       + (legacy ? "  ⚠ legacy PreToolUse entry also present — re-run `hook install` to migrate" : ""));
   } else if (legacy) {
     add("INFO", "hook-install",

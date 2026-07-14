@@ -552,6 +552,16 @@ with tempfile.TemporaryDirectory() as _home:
     check("doctor with a malformed non-dict `hooks` -> no crash (exit 0)",
           r.returncode == 0, r.stderr[:200])
     check("doctor malformed hooks -> no Traceback", "Traceback" not in r.stderr, r.stderr[:200])
+# v0.4.3: a CLEAN install (SubagentStart + capture) must NOT be flagged as legacy —
+# the capture entry lives under PreToolUse but carries --capture, not the mutate path
+with tempfile.TemporaryDirectory() as _home:
+    sp = os.path.join(_home, ".claude", "settings.json")
+    run_hook("", "install", "--settings", sp)
+    r = run_cli("doctor", env_extra={"HOME": _home})
+    check("doctor on a clean v0.4.3 install -> no false legacy warning",
+          "legacy" not in r.stdout, r.stdout[-400:])
+    check("doctor hook-install reports the task-capture registration",
+          "task capture" in r.stdout, r.stdout[-400:])
 
 section("init scaffolds a valid, usable config (item 10)")
 with tempfile.TemporaryDirectory() as d:
