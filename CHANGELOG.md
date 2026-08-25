@@ -3,6 +3,42 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [0.5.0] — 2026-08-26
+
+**Roster mode: callsigns in the LIVE TASK TREE.** The tree label is the
+agent-definition name — the one surface no hook could touch (v0.4.x delivered
+identity into context only; the "display expectation trap" behind the first
+external bug report). Roster mode makes the name the definition: generated
+persona agent files + a PreToolUse `updatedInput` rewrite of `subagent_type`,
+so a fan-out shows **Durga / Bosch / Chekhov** where it showed three
+`general-purpose` rows. Unblocked upstream: the Agent-tool multi-hook
+`updatedInput` clobber (claude-code#15897/#39814) is fixed — re-verified live
+on CC 2.1.245 (2026-08-26), single- and multi-hook.
+
+### Added
+- **`roster install|status|uninstall`**: generates callsign agent definitions
+  into an agents dir (default `~/.claude/agents`) + a manifest in per-user state.
+  A custom base's `.md` is cloned (tools/model/body preserved verbatim); built-in
+  bases get a generic body. Files carry a marker; uninstall removes only marked
+  files. `--base` (repeatable), `--count`, `--categories`, `--dir`, `--force`.
+- **`hook install --roster`** registers ONE PreToolUse retype entry (and prunes
+  the SubagentStart/capture entries — the persona lives in the definition, a
+  second namer would double-name). `hook run --retype`: task-themed pick via
+  `resolve_for_hook`, per-session used-file (flock/lockfile-serialized) so
+  concurrent siblings never share a callsign; callsigns deliberately RECYCLE
+  across sessions (a stable crew). Graceful ladder: unrostered base or exhausted
+  roster -> the mutate path; already-named dispatches pass through untouched.
+- `hook status` reports roster mode (`retype_installed`, `roster_installed`,
+  `roster_path` in `--json`); doctor's hook-install check recognizes it.
+- Parity step 11: roster generation byte-identical across ports (files +
+  manifest) and identical retype rewrites off a shared manifest. New Python
+  suite `tests/test_roster.py` (46 checks).
+
+### Changed
+- `_hook_mutate`/`hookMutate` accept an `avoid` list; the roster fallback passes
+  its callsigns so the two naming mechanisms can never surface the same name
+  side by side.
+
 ## [0.4.3] — 2026-07-14
 
 **The auto-namer hook now themes by TASK, not just role.** In 0.4.2 the hook could

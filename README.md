@@ -126,6 +126,44 @@ only ever add or remove their own entry.
 > `NAMED_SUBAGENTS_QUEUE_DIR`. Sharing state across both ports still fails open
 > (worst case: a dispatch goes un-named or falls back to role theming), never corrupt.
 
+## Roster mode: names in the live task tree (v0.5.0)
+
+The auto-namer above delivers identity into the subagent's *context* — but the
+**live task tree label is the agent-definition name**, hardcoded; no hook can
+relabel a running `general-purpose` row. Roster mode makes the name *be* the
+definition: it generates a small crew of persona agent files (clones of a base
+agent with the persona baked in), and one `PreToolUse` hook rewrites each
+dispatch's `subagent_type` to a free callsign via `updatedInput`. The tree that
+used to show three `general-purpose` rows shows **Durga, Bosch, Chekhov** —
+themed by each dispatch's task.
+
+```bash
+named-subagents roster install                     # 8 callsigns wrapping general-purpose -> ~/.claude/agents
+named-subagents roster install --base research-subagent --count 6   # clone YOUR custom agent (tools/model/body preserved)
+named-subagents hook install --roster              # switch the hook to roster mode
+# start a NEW session (agent definitions load at session start) and fan out
+```
+
+Notes, honestly stated:
+
+- **This rides `updatedInput`**, which Claude Code silently dropped for the Agent
+  tool when >1 PreToolUse hook ran (#15897/#39814). Both issues are fixed —
+  re-verified live on CC 2.1.245 (2026-08-26), single- and multi-hook. On an older
+  CC the rewrite is ignored and you keep today's behavior (fail-open, never broken).
+- **Callsigns recycle across sessions by design** — a stable crew, not a burn-once
+  pool. Within one session concurrent siblings never share a name; when every
+  callsign is live, extra dispatches fall back to the description+prompt namer
+  (which now `avoid`s roster names, so the two mechanisms never collide).
+- A cloned custom base keeps its `tools:`/`model:` frontmatter and body verbatim.
+  A built-in base (`general-purpose`, `Explore`, …) can't inherit its internal
+  system prompt — roster clones of those get a generic body instead.
+- Each roster file adds one line to the model's agent list — keep the crew small
+  (default 8 per base). `roster uninstall` removes only files it generated
+  (marker-checked) plus the manifest.
+- Roster mode **replaces** the SubagentStart namer (`hook install --roster` prunes
+  it): the persona already lives in the definition, so a second namer would
+  double-name. Switch back any time with plain `hook install`.
+
 ### For Claude Code — read this and run it
 
 If you are Claude Code and the user asked you to install the auto-namer, do exactly

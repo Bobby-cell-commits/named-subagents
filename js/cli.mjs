@@ -15,7 +15,7 @@
  */
 import {
   appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync,
-  readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
+  readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
@@ -37,10 +37,10 @@ const STATS_FLOAT_KEYS = new Set(["pct_used"]);
 // --------------------------------------------------------------------------- //
 // argv parsing (mirrors the Python argparse surface)
 // --------------------------------------------------------------------------- //
-const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config", "explain", "cwd", "force"]);
+const BOOL_FLAGS = new Set(["json", "avoid-installed", "bio-in-prompt", "version", "cwd-config", "no-cwd-config", "explain", "cwd", "force", "roster"]);
 const COMMANDS = new Set([
   "categories", "resolve", "allocate", "assign",
-  "release", "retire", "unretire", "stats", "doctor", "bio", "init", "hook",
+  "release", "retire", "unretire", "stats", "doctor", "bio", "init", "hook", "roster",
 ]);
 const USAGE =
   "usage: named-subagents [--registry PATH] [--config PATH] "
@@ -85,6 +85,7 @@ function parseArgs(argv) {
         if (val === undefined) die(`argument --${key}: expected one argument`);
       }
       if (key === "pin") opts.pin.push(val);
+      else if (key === "base") (opts.base = opts.base || []).push(val);   // repeatable
       else opts[key] = val;
       continue;
     }
@@ -570,11 +571,18 @@ function doctorChecks(opts) {
   for (const _ of iterOurHooks(sh.SubagentStart || [])) hooked = true;
   let legacy = false;
   let capture = false;
+  let retype = false;
   for (const [, h] of iterOurHooks(sh.PreToolUse || [])) {
     if (isCaptureHook(h)) capture = true;   // the v0.4.3 task-capture entry, NOT legacy
+    else if (isRetypeHook(h)) retype = true; // the v0.5.0 roster-mode entry, NOT legacy
     else legacy = true;
   }
-  if (hooked) {
+  if (retype) {
+    add("INFO", "hook-install",
+      `roster mode (PreToolUse retype) in ${sp}`
+      + (loadRoster() ? "" : "  ⚠ no roster manifest — run `named-subagents roster install`")
+      + ((hooked || capture) ? "  ⚠ auto-namer entries also present — re-run `hook install --roster`" : ""));
+  } else if (hooked) {
     add("INFO", "hook-install",
       `registered (SubagentStart${capture ? " + task capture" : ""}) in ${sp}`
       + (capture ? "" : "  ⚠ task capture not registered — re-run `hook install` for task theming")
@@ -848,8 +856,11 @@ function queuePop(sessionId, agentType, queueDir = null) {
 }
 
 /** Map a PreToolUse event -> the hookSpecificOutput object to emit, or null to
- * pass the dispatch through. May throw on internal error (caller fails open). */
-function hookMutate(event, ledgerPath = null) {
+ * pass the dispatch through. `avoid` excludes base names from the draw (the
+ * roster fallback passes its callsigns so the two naming mechanisms can never
+ * surface the same name side by side). May throw on internal error (caller
+ * fails open). */
+function hookMutate(event, ledgerPath = null, avoid = null) {
   if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
   if (!isObj(event) || !DISPATCH_TOOLS.has(event.tool_name)) return null;
   const ti = event.tool_input;
@@ -878,7 +889,7 @@ function hookMutate(event, ledgerPath = null) {
   if (lp) mkdirSync(dirname(lp), { recursive: true });
   const nickname = withLedgerLock(lp, () => {
     const led = new Ledger(lp);           // loads fresh state under the lock
-    const n = allocate(cat, 1, reg, { ledger: led })[0];
+    const n = allocate(cat, 1, reg, { ledger: led, avoid })[0];
     led.save();
     return n;
   });
@@ -934,6 +945,311 @@ function hookSubagentStart(event, ledgerPath = null, queueDir = null) {
   return { hookEventName: "SubagentStart", additionalContext: context };
 }
 
+// ---- roster mode (v0.5.0): visible names in the live task tree ------------- //
+// Claude Code's task-tree label is the agent-definition NAME (hardcoded — no
+// per-instance field exists; claude-code#9206 closed unplanned). Roster mode makes
+// the name the definition: `roster install` generates persona agent files (clones
+// of a base agent + persona preamble), and a PreToolUse hook rewrites
+// `subagent_type` -> a free roster callsign via `updatedInput`, so the tree shows
+// "Durga" where it showed "general-purpose". Viable since the Agent-tool
+// updatedInput multi-hook clobber (claude-code#15897/#39814) was fixed upstream
+// (verified live on CC 2.1.245, 2026-08-26 probe).
+const ROSTER_MARKER = "named-subagents-roster v1";  // sentinel inside generated files
+const ROSTER_USED_TTL = 48 * 3600.0;                // per-session used-files GC horizon
+const ROSTER_GENERIC_BODY =
+  "You are a capable general agent. Complete the dispatched task thoroughly "
+  + "and return a clear, complete report of what you did and found.\n";
+
+/** Where the roster manifest lives. NAMED_SUBAGENTS_ROSTER overrides; default is
+ * per-user state (user-written only — the hook never reads project-local roster
+ * state, same trust posture as the hook registry load). */
+function rosterStatePath() {
+  const env = process.env.NAMED_SUBAGENTS_ROSTER;
+  if (env) return env;
+  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(base, "named-subagents", "roster.json");
+}
+
+/** Manifest object or null. Defensive: malformed/missing -> null (hook falls
+ * back to the mutate path), never a crash. */
+function loadRoster(path = null) {
+  const p = path || rosterStatePath();
+  if (!existsSync(p)) return null;
+  let data;
+  try { data = JSON.parse(readFileSync(p, "utf8")); } catch { return null; }
+  if (!isObj(data) || !isObj(data.agents)) return null;
+  if (!isObj(data.files)) data.files = {};
+  return data;
+}
+
+function saveRoster(data, path = null) {
+  const p = path || rosterStatePath();
+  mkdirSync(dirname(p) || ".", { recursive: true });
+  const tmp = `${p}.${process.pid}.tmp`;
+  try { unlinkSync(tmp); } catch { /* not present */ }
+  const fd = openSync(tmp, "wx");
+  try {
+    writeFileSync(fd, JSON.stringify(data, null, 2) + "\n");
+    closeSync(fd);
+    renameSync(tmp, p);
+  } catch (e) {
+    try { closeSync(fd); } catch { /* already closed */ }
+    try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+    throw e;
+  }
+}
+
+function rosterUsedPath(sessionId, queueDir = null) {
+  let sid = typeof sessionId === "string" ? sessionId : "";
+  sid = sid.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 80) || "nosession";
+  return join(queueDir || hookQueueDir(), `u-${sid}.json`);
+}
+
+/** Best-effort GC of stale per-session used-files (sessions end silently). */
+function rosterPruneUsed(queueDir = null) {
+  const qd = queueDir || hookQueueDir();
+  try {
+    const now = Date.now();
+    for (const fn of readdirSync(qd)) {
+      if (fn.startsWith("u-") && fn.endsWith(".json")) {
+        const p = join(qd, fn);
+        try {
+          if (now - statSync(p).mtimeMs > ROSTER_USED_TTL * 1000) unlinkSync(p);
+        } catch { /* raced away */ }
+      }
+    }
+  } catch { /* dir absent */ }
+}
+
+/** Pick a free roster callsign for `baseType`, preferring `category`, and record
+ * it in the per-session used-file so concurrent siblings never share a name.
+ * Names deliberately RECYCLE across sessions (a stable crew, not a one-shot pool
+ * — unlike the global hook ledger). Returns [name, category] or [null, null]. */
+function rosterPick(roster, baseType, category, sessionId, queueDir = null) {
+  const perBase = (roster.agents || {})[baseType];
+  if (!isObj(perBase)) return [null, null];
+  const cats = (hasOwn(perBase, category) ? [category] : [])
+    .concat(Object.keys(perBase).filter((c) => c !== category).sort());
+  rosterPruneUsed(queueDir);
+  const upath = rosterUsedPath(sessionId, queueDir);
+  mkdirSync(dirname(upath) || ".", { recursive: true });
+  let picked = [null, null];
+  withLedgerLock(upath, () => {
+    let used = new Set();
+    try {
+      const data = JSON.parse(readFileSync(upath, "utf8"));
+      if (isObj(data)) used = new Set((data.used || []).filter((n) => typeof n === "string"));
+    } catch { /* fresh session */ }
+    for (const c of cats) {
+      const names = Array.isArray(perBase[c]) ? perBase[c] : [];
+      for (const n of names) {
+        if (typeof n === "string" && n && !used.has(n)) {
+          used.add(n);
+          const tmp = `${upath}.${process.pid}.tmp`;
+          try { unlinkSync(tmp); } catch { /* not present */ }
+          const fd = openSync(tmp, "wx");
+          try {
+            writeFileSync(fd, JSON.stringify({ used: [...used].sort(), ts: Date.now() / 1000 }));
+            closeSync(fd);
+            renameSync(tmp, upath);
+          } catch (e) {
+            try { closeSync(fd); } catch { /* already closed */ }
+            try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+            throw e;
+          }
+          picked = [n, c];
+          return;
+        }
+      }
+    }
+  });
+  return picked;
+}
+
+/** PreToolUse handler for roster mode: rewrite `subagent_type` to a free roster
+ * callsign so the live task tree shows the NAME. Persona delivery is the roster
+ * agent file itself (no SubagentStart queue involved). Falls back to hookMutate
+ * (description+prompt naming) when no roster covers the dispatch, and passes
+ * through (null) anything already named. */
+function hookRetype(event, roster = null, queueDir = null, ledgerPath = null) {
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
+  if (!isObj(event) || !DISPATCH_TOOLS.has(event.tool_name)) return null;
+  const ti = event.tool_input;
+  if (!isObj(ti)) return null;
+  const str = (v) => (typeof v === "string" ? v : "");
+  const prompt = str(ti.prompt);
+  const description = str(ti.description);
+  const subagentType = str(ti.subagent_type);
+  if (prompt.includes(PERSONA_SIG)) return null;  // CLI `assign` already named this
+  const ros = roster !== null ? roster : loadRoster();
+  if (ros && hasOwn(ros.files || {}, subagentType)) {
+    return null;                        // already retyped (a re-fire), or caller
+  }                                     // dispatched a roster persona directly
+  const rosterNames = Object.keys((ros || {}).files || {}).sort();
+  if (!ros || !hasOwn(ros.agents || {}, subagentType)) {
+    return hookMutate(event, ledgerPath,           // unrostered -> legacy naming
+      rosterNames.length ? rosterNames : null);
+  }
+  const { registry: reg } = loadWithConfig(null, null, false);
+  const task = `${description}\n${prompt}`.trim();
+  const cat = resolveForHook(reg, { role: subagentType || null, task: task || null });
+  const [name, usedCat] = rosterPick(ros, subagentType, cat, event.session_id, queueDir);
+  if (!name) {
+    return hookMutate(event, ledgerPath,           // roster fully live this session
+      rosterNames.length ? rosterNames : null);
+  }
+  const emoji = reg.emoji(hasOwn(reg.categories, usedCat) ? usedCat : "default");
+  const updated = { ...ti };
+  updated.subagent_type = name;
+  updated.description = description ? `${emoji} ${description}`.trim() : `${emoji} ${name}`;
+  return { hookEventName: "PreToolUse", updatedInput: updated };
+}
+
+/** Split a Claude Code agent .md into [frontmatterLines, body]. Frontmatter
+ * lines come back verbatim MINUS `name:`/`description:` (the roster clone owns
+ * those); no YAML parse, so unknown keys (tools, model, ...) survive untouched.
+ * Returns [null, text] when there is no leading frontmatter block. */
+function agentMdSplit(text) {
+  if (!text.startsWith("---\n")) return [null, text];
+  const end = text.indexOf("\n---\n", 4);
+  if (end < 0) return [null, text];
+  const kept = text.slice(4, end).split("\n")
+    .filter((ln) => !/^(name|description)\s*:/.test(ln));
+  return [kept, text.slice(end + 5)];
+}
+
+/** Render one roster agent definition file. */
+function rosterAgentMd(name, baseType, category, reg, baseFm, baseBody) {
+  const emoji = reg.emoji(category);
+  const theme = reg.theme(category);
+  const desc = `${emoji} Roster callsign of ${baseType} (named-subagents). `
+    + `Prefer dispatching '${baseType}' — the roster hook routes to a free `
+    + "callsign automatically.";
+  const fm = ["---", `name: ${name}`, `description: "${desc}"`]
+    .concat((baseFm || []).filter((ln) => ln.trim()));
+  fm.push("---");
+  const persona = personaPreamble(name, theme, null, false);
+  const body = (baseBody || "").trim() || ROSTER_GENERIC_BODY.trim();
+  return `${fm.join("\n")}\n<!-- ${ROSTER_MARKER} base=${baseType} category=${category} -->\n`
+    + `${persona}\n${body}\n`;
+}
+
+/** Locate an existing definition for `baseType` to clone (its own tools/model/
+ * body), searching the target dir then the user agents dir. Built-in types
+ * (general-purpose, Explore, ...) have no file -> generic body. */
+function rosterFindBaseFile(baseType, agentsDir) {
+  for (const c of [join(agentsDir, `${baseType}.md`),
+                   join(homedir(), ".claude", "agents", `${baseType}.md`)]) {
+    if (isFileQuiet(c)) return c;
+  }
+  return null;
+}
+
+function cmdRoster(opts) {
+  const action = opts._pos[0];
+  if (!action || !["install", "status", "uninstall"].includes(action)) {
+    die(action
+      ? `argument roster: invalid choice: '${action}' (choose from 'install', 'status', 'uninstall')`
+      : "roster: a subcommand is required (install|status|uninstall)");
+  }
+  const rpath = opts.state || rosterStatePath();
+  if (action === "status") {
+    const ros = loadRoster(rpath);
+    if (!ros) { console.log(`no roster installed (manifest: ${rpath})`); return 0; }
+    const adir = ros.dir || "?";
+    console.log(`manifest:  ${rpath}\nagents dir: ${adir}`);
+    let missing = 0;
+    for (const base of Object.keys(ros.agents || {}).sort()) {
+      const cats = ros.agents[base];
+      const names = Object.values(cats).flat();
+      console.log(`  ${base}: ${names.length} callsigns (${Object.keys(cats).sort().join(", ")})`);
+    }
+    for (const nm of Object.keys(ros.files || {}).sort()) {
+      if (!isFileQuiet(join(adir, ros.files[nm]))) {
+        console.log(`  ⚠ missing file for ${nm}: ${ros.files[nm]}`);
+        missing += 1;
+      }
+    }
+    return missing ? 1 : 0;
+  }
+  if (action === "uninstall") {
+    const ros = loadRoster(rpath);
+    if (!ros) { console.log(`no roster installed (manifest: ${rpath})`); return 0; }
+    const adir = ros.dir || "";
+    let removed = 0;
+    for (const nm of Object.keys(ros.files || {}).sort()) {
+      const p = join(adir, ros.files[nm]);
+      let ours = false;
+      try { ours = readFileSync(p, "utf8").includes(ROSTER_MARKER); } catch { continue; }
+      if (ours) { unlinkSync(p); removed += 1; }   // never delete a file we didn't generate
+    }
+    try { unlinkSync(rpath); } catch { /* already gone */ }
+    console.log(`removed ${removed} roster agent file(s) from ${adir} and the manifest`);
+    return 0;
+  }
+  // install
+  const { registry: reg } = regCfg(opts);
+  const bases = [...new Set(opts.base && opts.base.length ? opts.base : ["general-purpose"])];
+  const adirRaw = opts.dir || join(homedir(), ".claude", "agents");
+  const adir = adirRaw.startsWith("~") ? join(homedir(), adirRaw.slice(1)) : adirRaw;
+  const count = Math.max(1, parseIntStrict(opts.count, "count", 8));
+  let cats;
+  if (opts.categories) {
+    cats = opts.categories.split(",").map((c) => c.trim()).filter(Boolean);
+    const bad = cats.filter((c) => !hasOwn(reg.categories, c));
+    if (bad.length) {
+      console.error(`error: unknown categories: ${bad.join(", ")} `
+        + "(see `named-subagents categories`)");
+      return 1;
+    }
+  } else {
+    cats = Object.keys(reg.categories).filter((c) => c !== "default");
+  }
+  mkdirSync(adir, { recursive: true });
+  const led = new Ledger(null);         // ephemeral: cross-base draws never collide
+  const manifest = { version: 1, dir: adir, agents: {}, files: {} };
+  const written = [];
+  for (const base of bases) {
+    const src = rosterFindBaseFile(base, adir);
+    let baseFm = null;
+    let baseBody = null;
+    if (src) [baseFm, baseBody] = agentMdSplit(readFileSync(src, "utf8"));
+    const perBase = {};
+    let drawn = 0;
+    for (let i = 0; i < count; i++) {   // round-robin across categories
+      const c = cats[i % cats.length];
+      let nm;
+      try { nm = stripGen(allocate(c, 1, reg, { ledger: led })[0]); }
+      catch (e) { if (e instanceof PoolExhaustedError) continue; throw e; }
+      const fp = join(adir, `${nm}.md`);
+      if (existsSync(fp) && !opts.force) {
+        let ours = false;
+        try { ours = readFileSync(fp, "utf8").includes(ROSTER_MARKER); } catch { /* unreadable */ }
+        if (!ours) {
+          console.log(`  skip ${nm}: ${fp} exists and is not a roster file (--force to overwrite)`);
+          continue;
+        }
+      }
+      writeFileSync(fp, rosterAgentMd(nm, base, c, reg, baseFm, baseBody));
+      (perBase[c] = perBase[c] || []).push(nm);
+      manifest.files[nm] = `${nm}.md`;
+      written.push(nm);
+      drawn += 1;
+    }
+    manifest.agents[base] = perBase;
+    const origin = src ? `cloned from ${src}` : "generic body (built-in base)";
+    console.log(`${base}: ${drawn} callsign(s) [${origin}]`);
+  }
+  saveRoster(manifest, rpath);
+  console.log(`\nwrote ${written.length} agent file(s) to ${adir}\nmanifest: ${rpath}\n`
+    + "Next: `named-subagents hook install --roster`, then start a NEW Claude\n"
+    + "Code session (agent definitions load at session start). Fan-outs will\n"
+    + "show callsigns in the live task tree instead of the base agent type.\n"
+    + "Note: each roster agent adds one line to the model's agent list — keep\n"
+    + "the roster small (default 8/base).");
+  return 0;
+}
+
 function cmdHookRun(argv = null) {
   // FAIL-OPEN: read the event on stdin, emit the hookSpecificOutput, ALWAYS exit
   // 0. Routing: `--capture` (the v0.4.3 PreToolUse registration) -> the output-free
@@ -945,10 +1261,12 @@ function cmdHookRun(argv = null) {
   // non-zero (2 would block).
   try {
     const capture = (argv || []).includes("--capture");
+    const retype = (argv || []).includes("--retype");
     const event = JSON.parse(readFileSync(0, "utf8"));
     const ev = isObj(event) ? event.hook_event_name : null;
     const out = capture ? hookPreCapture(event)
-      : ev === "SubagentStart" ? hookSubagentStart(event) : hookMutate(event);
+      : ev === "SubagentStart" ? hookSubagentStart(event)
+      : retype ? hookRetype(event) : hookMutate(event);
     if (out !== null) process.stdout.write(pyDumps({ hookSpecificOutput: out }));
   } catch { /* fail-open by design */ }
   return 0;
@@ -972,10 +1290,71 @@ function hookCommand(capture = false) {
 }
 
 /** True for the v0.4.3 PreToolUse task-capture registration (ours + --capture);
- * a marker'd PreToolUse entry WITHOUT the flag is a legacy (pre-0.4.2) mutate hook. */
+ * a marker'd PreToolUse entry with NEITHER flag is a legacy (pre-0.4.2) mutate hook. */
 function isCaptureHook(h) {
   const cmd = isObj(h) ? h.command || "" : "";
   return cmd.includes(HOOK_MARKER) && cmd.includes("--capture");
+}
+
+/** The roster-mode registration (v0.5.0): a single PreToolUse entry whose
+ * updatedInput rewrites `subagent_type` to a roster callsign. */
+function hookCommandRetype() {
+  const cli = fileURLToPath(import.meta.url);
+  return `"${process.execPath}" "${cli}" hook run --retype --managed-by ${HOOK_MARKER}`;
+}
+
+/** True for the v0.5.0 roster-mode PreToolUse registration (ours + --retype). */
+function isRetypeHook(h) {
+  const cmd = isObj(h) ? h.command || "" : "";
+  return cmd.includes(HOOK_MARKER) && cmd.includes("--retype");
+}
+
+/** Register roster mode: ONE PreToolUse retype entry. Prunes our SubagentStart +
+ * capture + legacy entries — roster mode replaces them (persona now travels in
+ * the roster agent definition, so an SS namer would double-name). */
+function hookInstallRoster(opts) {
+  const sp = settingsPath(opts);
+  const { data, error } = readSettings(sp);
+  if (error) {
+    console.error(`error: ${sp} is not valid settings JSON (${error}); refusing to modify it.`);
+    return 1;
+  }
+  if (data.hooks === undefined) data.hooks = {};
+  if (!isObj(data.hooks)) { console.error(`error: ${sp} has a non-object 'hooks'; refusing to modify.`); return 1; }
+  const existed = existsSync(sp);
+  let removed = 0;
+  for (const ev of ["SubagentStart", "PreToolUse"]) {
+    const [newList, n] = pruneOurHooks(data.hooks[ev], (h) => !isRetypeHook(h));
+    if (n) { data.hooks[ev] = newList; removed += n; }
+  }
+  if (data.hooks.PreToolUse === undefined) data.hooks.PreToolUse = [];
+  if (!Array.isArray(data.hooks.PreToolUse)) {
+    console.error(`error: ${sp} has a non-list 'hooks.PreToolUse'; refusing to modify.`); return 1;
+  }
+  const cmd = hookCommandRetype();
+  let refreshed = false;
+  for (const [, h] of iterOurHooks(data.hooks.PreToolUse)) {
+    h.command = cmd;
+    refreshed = true;
+    break;
+  }
+  if (!refreshed) {
+    data.hooks.PreToolUse.push({ matcher: "Agent|Task",
+      hooks: [{ type: "command", command: cmd }] });
+  }
+  writeSettings(sp, data, existed);
+  const mig = removed
+    ? `\n  replaced ${removed} auto-namer entr${removed === 1 ? "y" : "ies"} (roster mode supersedes them)`
+    : "";
+  const rosLine = loadRoster()
+    ? ""
+    : "\n  ⚠ no roster installed yet — run `named-subagents roster install` "
+      + "(until then, dispatches fall back to description+prompt naming)";
+  console.log(`installed the roster retype hook in ${sp}\n`
+    + `  event: PreToolUse   matcher: Agent|Task\n  command: ${cmd}${mig}${rosLine}\n`
+    + "New Claude Code sessions will dispatch fan-outs under roster callsigns —\n"
+    + "visible in the live task tree. Verify with `named-subagents hook status`.");
+  return 0;
 }
 
 function readSettings(sp) {
@@ -1040,6 +1419,7 @@ function pruneOurHooks(entries, only = null) {
 }
 
 function cmdHookInstall(opts) {
+  if (opts.roster) return hookInstallRoster(opts);
   const sp = settingsPath(opts);
   const { data, error } = readSettings(sp);
   if (error) {
@@ -1128,10 +1508,16 @@ function cmdHookStatus(opts) {
   let cmd = null;
   let legacy = false;
   let capture = false;
+  let retype = false;
   const hk = isObj(data.hooks) ? data.hooks : {};
   for (const [, h] of iterOurHooks(hk.SubagentStart || [])) { installed = true; cmd = h.command; }
   for (const [, h] of iterOurHooks(hk.PreToolUse || [])) {
     if (isCaptureHook(h)) { capture = true; continue; }   // the v0.4.3 task-capture entry
+    if (isRetypeHook(h)) {               // the v0.5.0 roster-mode entry
+      retype = true;
+      if (!installed) cmd = h.command;
+      continue;
+    }
     legacy = true;                       // a pre-0.4.2 (clobber-prone) registration lingers
     if (!installed) cmd = h.command;
   }
@@ -1150,11 +1536,25 @@ function cmdHookStatus(opts) {
       settings_path: sp, settings_malformed: !!error, installed, command: cmd,
       ledger_path: lp, ledger_exists: ledExists, total_allocated: allocated,
       disabled, legacy_pretooluse: legacy, capture_installed: capture,
+      retype_installed: retype, roster_path: rosterStatePath(),
+      roster_installed: !!loadRoster(),
     }, { indent: 2 }));
     return 0;
   }
   console.log(`settings:   ${sp}${error ? "  ⚠ MALFORMED JSON" : ""}`);
-  console.log(`installed:  ${installed ? "yes" : "no"}${installed ? "  (event: SubagentStart)" : ""}`);
+  const mode = retype
+    ? "yes  (roster mode — PreToolUse retype: callsigns in the live task tree)"
+    : installed ? "yes  (event: SubagentStart)" : "no";
+  console.log(`installed:  ${mode}`);
+  if (retype) {
+    const ros = loadRoster();
+    console.log(`  roster:   ${rosterStatePath()}  `
+      + `(${ros ? "installed" : "⚠ NOT installed — run `named-subagents roster install`"})`);
+    if (installed || capture) {
+      console.log("  ⚠ mixed:  auto-namer entries are also present — "
+        + "re-run `hook install --roster` to prune them");
+    }
+  }
   if (cmd) console.log(`  command:  ${cmd}`);
   if (installed) {
     console.log(`  capture:  ${capture
@@ -1198,6 +1598,7 @@ const HANDLERS = {
   bio: cmdBio,
   init: cmdInit,
   hook: cmdHook,
+  roster: cmdRoster,
 };
 
 function main() {

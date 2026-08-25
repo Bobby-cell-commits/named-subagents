@@ -114,4 +114,26 @@ $JS init --path "$TMP/js-init.json" > /dev/null
 diff -u "$TMP/py-init.json" "$TMP/js-init.json" > /dev/null || fail "init config differs"
 echo "  [PASS] init scaffolds an identical config"
 
+# 11 — v0.5.0 roster: generation is byte-identical (agent files + manifest map),
+#      and the retype hook rewrites subagent_type identically off a shared manifest
+$PY roster install --dir "$TMP/ros-py" --state "$TMP/ros-py.json" --count 5 > /dev/null
+$JS roster install --dir "$TMP/ros-js" --state "$TMP/ros-js.json" --count 5 > /dev/null
+for f in "$TMP/ros-py"/*.md; do
+  diff -u "$f" "$TMP/ros-js/$(basename "$f")" > /dev/null \
+    || fail "roster agent file $(basename "$f") differs"
+done
+python3 -c "
+import json,sys
+py=json.load(open('$TMP/ros-py.json')); js=json.load(open('$TMP/ros-js.json'))
+sys.exit(0 if py['agents']==js['agents'] and sorted(py['files'])==sorted(js['files']) else 1)
+" || fail "roster manifest differs"
+REV='{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"parity-r","tool_input":{"description":"security audit","prompt":"Audit auth.","subagent_type":"general-purpose"}}'
+printf '%s' "$REV" | NAMED_SUBAGENTS_ROSTER="$TMP/ros-py.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/rq-py" \
+  NAMED_SUBAGENTS_LEDGER="$TMP/ros-led.json" $PY hook run --retype > "$TMP/py-retype.json"
+printf '%s' "$REV" | NAMED_SUBAGENTS_ROSTER="$TMP/ros-py.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/rq-js" \
+  NAMED_SUBAGENTS_LEDGER="$TMP/ros-led.json" $JS hook run --retype > "$TMP/js-retype.json"
+diff -u "$TMP/py-retype.json" "$TMP/js-retype.json" > /dev/null || fail "roster retype output differs"
+grep -q '"subagent_type"' "$TMP/py-retype.json" || fail "retype did not rewrite subagent_type"
+echo "  [PASS] v0.5.0 roster generation + retype identical"
+
 echo "PARITY OK"
