@@ -19,6 +19,8 @@ import os
 import subprocess
 import sys
 import tempfile
+if hasattr(sys.stdout, "reconfigure"):   # emoji in output; Windows pipes default to cp1252
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -181,7 +183,7 @@ with tempfile.TemporaryDirectory() as td:
                 {"type": "command", "command": f"x hook run --retype --managed-by {MARKER}"}]}],
             "SubagentStop": [{"hooks": [
                 {"type": "command", "command": f"x hook run --release --managed-by {MARKER}"}]}]}}, fh)
-    r = run_cli(["doctor"], env_extra=dict(ENV, HOME=dhome))
+    r = run_cli(["doctor"], env_extra=dict(ENV, HOME=dhome, USERPROFILE=dhome))
     line = next((ln for ln in r.stdout.splitlines() if "hook-install" in ln), "")
     check("doctor flags a partial name-mode install (0.5/0.6 entries only)",
           "partial" in line and "SubagentStart" in line, line)
@@ -191,7 +193,7 @@ with tempfile.TemporaryDirectory() as td:
     section("plugin hooks stand down when a settings.json install exists")
     home = os.path.join(td, "home")
     os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
-    plug_env = dict(ENV, HOME=home)
+    plug_env = dict(ENV, HOME=home, USERPROFILE=home)
     ev = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "plug",
           "tool_input": {"subagent_type": "general-purpose", "description": "t", "prompt": "p"}}
     r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,

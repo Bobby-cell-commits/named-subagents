@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 import tempfile
+if hasattr(sys.stdout, "reconfigure"):   # emoji in output; Windows pipes default to cp1252
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Repo root (one level up from tests/) — the subprocess CWD so `python -m
 # named_subagents.cli` resolves the package from source without installing, and
@@ -548,7 +550,7 @@ with tempfile.TemporaryDirectory() as _home:
     os.makedirs(os.path.join(_home, ".claude"))
     with open(os.path.join(_home, ".claude", "settings.json"), "w") as fh:
         fh.write('{"hooks": "enabled"}')
-    r = run_cli("doctor", env_extra={"HOME": _home})
+    r = run_cli("doctor", env_extra={"HOME": _home, "USERPROFILE": _home})
     check("doctor with a malformed non-dict `hooks` -> no crash (exit 0)",
           r.returncode == 0, r.stderr[:200])
     check("doctor malformed hooks -> no Traceback", "Traceback" not in r.stderr, r.stderr[:200])
@@ -557,7 +559,7 @@ with tempfile.TemporaryDirectory() as _home:
 with tempfile.TemporaryDirectory() as _home:
     sp = os.path.join(_home, ".claude", "settings.json")
     run_hook("", "install", "--context-only", "--settings", sp)
-    r = run_cli("doctor", env_extra={"HOME": _home})
+    r = run_cli("doctor", env_extra={"HOME": _home, "USERPROFILE": _home})
     check("doctor on a clean v0.4.3 install -> no false legacy warning",
           "legacy" not in r.stdout, r.stdout[-400:])
     check("doctor hook-install reports the task-capture registration",

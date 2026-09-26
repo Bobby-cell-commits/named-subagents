@@ -22,6 +22,8 @@ import os
 import subprocess
 import sys
 import tempfile
+if hasattr(sys.stdout, "reconfigure"):   # emoji in output; Windows pipes default to cp1252
+    sys.stdout.reconfigure(encoding="utf-8")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -173,7 +175,7 @@ with tempfile.TemporaryDirectory() as td:
     with open(os.path.join(home, ".claude", "agents", "x.md"), "w", encoding="utf-8") as fh:
         fh.write(f"---\nname: {first}\ndescription: d\n---\nbody\n")
     e = env(fresh_ledger=True)
-    e["HOME"] = home
+    e["HOME"] = e["USERPROFILE"] = home
     got = name_of(run(pre(session="ia1"), e)[1])
     check("a name equal to an installed agent type is not picked", got and got != first,
           f"{got} vs {first}")
@@ -627,7 +629,7 @@ with tempfile.TemporaryDirectory() as td:
     section("H3 — install defaults to name mode; doctor sees the plugin")
     home = os.path.join(td, "h3home")
     os.makedirs(os.path.join(home, ".claude"))
-    he = dict(os.environ, HOME=home, **env())
+    he = dict(os.environ, HOME=home, USERPROFILE=home, **env())
     he.pop("CLAUDE_PLUGIN_ROOT", None)
     sp = os.path.join(home, ".claude", "settings.json")
 

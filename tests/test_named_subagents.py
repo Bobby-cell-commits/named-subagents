@@ -11,6 +11,8 @@ import re
 import subprocess
 import sys
 import tempfile
+if hasattr(sys.stdout, "reconfigure"):   # emoji in output; Windows pipes default to cp1252
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Repo root importable when run as `python tests/test_named_subagents.py`
 # (sys.path[0] is tests/; the package lives one level up).
@@ -888,7 +890,7 @@ with tempfile.TemporaryDirectory() as d:
 section("Doctor (D12) — exit codes")
 with tempfile.TemporaryDirectory() as d:
     fake_home = os.path.join(d, "home"); os.makedirs(fake_home)
-    env_home = {"HOME": fake_home}  # isolate from real ~/.claude + ~/.config
+    env_home = {"HOME": fake_home, "USERPROFILE": fake_home}  # isolate from real ~/.claude + ~/.config
 
     r = run_cli("doctor", "--json", env_extra=env_home)
     data = json.loads(r.stdout)
@@ -980,7 +982,7 @@ check("record issue: well-formed -> None",
 # doctor on the malformed shapes (CLI subprocess)
 with tempfile.TemporaryDirectory() as d:
     fake_home = os.path.join(d, "home"); os.makedirs(fake_home)
-    env_home = {"HOME": fake_home}
+    env_home = {"HOME": fake_home, "USERPROFILE": fake_home}
     for shape, raw in MALFORMED.items():
         lp = os.path.join(d, f"{shape}.json")
         with open(lp, "w") as fh:
