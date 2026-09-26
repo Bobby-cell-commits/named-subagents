@@ -175,6 +175,22 @@ with tempfile.TemporaryDirectory() as td:
           not any(MARKER in c for ev in hk for c in cmds(ev)), str(hk))
     check("uninstall keeps the foreign hook", "somebody-elses-hook" in cmds("PreToolUse"))
 
+    section("doctor — name mode")
+    dhome = os.path.join(td, "dhome")
+    os.makedirs(os.path.join(dhome, ".claude"))
+    with open(os.path.join(dhome, ".claude", "settings.json"), "w", encoding="utf-8") as fh:
+        json.dump({"hooks": {
+            "PreToolUse": [{"matcher": "Agent|Task", "hooks": [
+                {"type": "command", "command": f"x hook run --retype --managed-by {MARKER}"}]}],
+            "SubagentStop": [{"hooks": [
+                {"type": "command", "command": f"x hook run --release --managed-by {MARKER}"}]}]}}, fh)
+    r = run_cli(["doctor"], env_extra=dict(ENV, HOME=dhome))
+    line = next((ln for ln in r.stdout.splitlines() if "hook-install" in ln), "")
+    check("doctor flags a partial name-mode install (0.5/0.6 entries only)",
+          "partial" in line and "SubagentStart" in line, line)
+    st = next((ln for ln in r.stdout.splitlines() if "name-selftest" in ln), "")
+    check("doctor self-tests the name-mode chain", st.startswith("[PASS]"), st or r.stdout[-400:])
+
     section("plugin hooks stand down when a settings.json install exists")
     if PORT == "js":
         print("  [SKIP] the plugin runs the Python port only (hooks/run.py)")
@@ -193,8 +209,18 @@ with tempfile.TemporaryDirectory() as td:
                 {"type": "command", "command": f"x hook run --name --managed-by {MARKER}"}]}]}}, fh)
         r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
                     stdin_data=json.dumps(dict(ev, session_id="plug2")))
-        check("plugin is silent when settings.json already has our hook",
+        check("plugin is silent on an event settings.json already handles",
               r.returncode == 0 and not r.stdout.strip(), r.stdout)
+        # A 0.5/0.6 settings install registered only PreToolUse + SubagentStop; the
+        # plugin must still run SubagentStart (identity) and Stop (alerts).
+        run_cli(["hook", "run", "--retype"], env_extra=plug_env,     # the settings copy
+                stdin_data=json.dumps(dict(ev, session_id="plug3")))
+        r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
+                    stdin_data=json.dumps({"hook_event_name": "SubagentStart",
+                                           "session_id": "plug3", "agent_id": "p3",
+                                           "agent_type": "general-purpose"}))
+        check("plugin still handles an event settings.json does not register",
+              '"additionalContext"' in r.stdout, r.stdout + r.stderr)
 
 print()
 if failures:

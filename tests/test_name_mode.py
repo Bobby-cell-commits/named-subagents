@@ -57,19 +57,39 @@ def run(event, env, flag="--name", extra=()):
     return r.returncode, out
 
 
+_tuid = [0]
+
+
 def pre(session="s1", subagent_type="general-purpose", description="probe task",
-        prompt="Do the probe.", name=None, tool="Agent"):
+        prompt="Do the probe.", name=None, tool="Agent", tool_use_id=None):
     ti = {"description": description, "prompt": prompt}
     if subagent_type is not None:
         ti["subagent_type"] = subagent_type
     if name is not None:
         ti["name"] = name
+    if tool_use_id is None:
+        _tuid[0] += 1
+        tool_use_id = f"toolu_{_tuid[0]}"
     return {"hook_event_name": "PreToolUse", "tool_name": tool, "session_id": session,
-            "tool_input": ti}
+            "tool_use_id": tool_use_id, "tool_input": ti}
+
+
+TX = None          # the session transcript path; set once the temp dir exists
+
+
+def meta_file(aid):
+    """Where CC keeps agent <aid>'s meta.json, relative to the session transcript."""
+    return os.path.join(TX[:-len(".jsonl")], "subagents", f"agent-{aid}.meta.json")
+
+
+def write_meta(aid, meta):
+    os.makedirs(os.path.dirname(meta_file(aid)), exist_ok=True)
+    with open(meta_file(aid), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh)
 
 
 def start(aid, session="s1", agent_type="general-purpose"):
-    return {"hook_event_name": "SubagentStart", "session_id": session,
+    return {"hook_event_name": "SubagentStart", "session_id": session, "transcript_path": TX,
             "agent_id": aid, "agent_type": agent_type}
 
 
@@ -91,6 +111,7 @@ def name_of(out):
 
 
 with tempfile.TemporaryDirectory() as td:
+    TX = os.path.join(td, "tx", "sess.jsonl")
     QD = os.path.join(td, "q")
     SESS = os.path.join(td, "sessions")
     os.makedirs(SESS)
@@ -147,6 +168,18 @@ with tempfile.TemporaryDirectory() as td:
     rc, out = run(pre(session="p2"), env(fresh_ledger=True))
     check("an unreadable session file is ignored", rc == 0 and name_of(out), str(out))
     os.unlink(os.path.join(SESS, "bad.json"))
+
+    section("PreToolUse — installed agent names are skipped")
+    first = name_of(run(pre(session="ia0"), env(fresh_ledger=True))[1])
+    home = os.path.join(td, "home-ia")
+    os.makedirs(os.path.join(home, ".claude", "agents"))
+    with open(os.path.join(home, ".claude", "agents", "x.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"---\nname: {first}\ndescription: d\n---\nbody\n")
+    e = env(fresh_ledger=True)
+    e["HOME"] = home
+    got = name_of(run(pre(session="ia1"), e)[1])
+    check("a name equal to an installed agent type is not picked", got and got != first,
+          f"{got} vs {first}")
 
     section("PreToolUse — pass-through")
     rc, out = run(pre(session="m1", name="Zed"), env())
@@ -292,6 +325,74 @@ with tempfile.TemporaryDirectory() as td:
     rc, out = main_stop()
     check("model-named agent with matching meta: no alert", out is None, str(out))
 
+    section("hardening — a failed pick still queues a placeholder")
+    s = "hf"
+    bad = env()
+    bad["NAMED_SUBAGENTS_LEDGER"] = os.path.join(td, "ledger-is-a-dir")
+    os.makedirs(bad["NAMED_SUBAGENTS_LEDGER"])
+    rc, out = run(pre(session=s, description="first"), bad)
+    check("a failing pick fails open (exit 0, dispatch unchanged)", rc == 0 and out is None, str(out))
+    nb2 = name_of(run(pre(session=s, description="second"), env())[1])
+    rc, out = run(start("hf1", session=s), env())
+    check("the failed dispatch's Start pairs with its placeholder (no identity)",
+          out is None, str(out))
+    rc, out = run(start("hf2", session=s), env())
+    ac = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    check("the next sibling still gets its own identity", f"`[{nb2}]`" in ac, ac[:120])
+
+    section("hardening — a Start whose meta.json exists is a resume")
+    s = "hr"
+    q1 = name_of(run(pre(session=s, description="sib"), env())[1])
+    write_meta("hrK", {"name": "Somebody", "toolUseId": "toolu_old"})
+    rc, out = run(start("hrK", session=s), env())
+    check("resume of an agent with no binding does not steal a sibling's entry",
+          out is None and q1 in live(s), str(out))
+    check("the resumed agent's recorded name counts as live", "Somebody" in live(s), str(live(s)))
+    rc, out = run(start("hrL", session=s), env())
+    ac = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    check("the sibling still gets its own name", f"`[{q1}]`" in ac, ac[:120])
+
+    section("hardening — Stop repairs a swapped pairing via toolUseId")
+    s = "sw"
+    na_ = name_of(run(pre(session=s, description="a", tool_use_id="tA"), env())[1])
+    nb_ = name_of(run(pre(session=s, description="b", tool_use_id="tB"), env())[1])
+    run(start("sw1", session=s), env())             # FIFO binds sw1 -> A
+    run(start("sw2", session=s), env())             # and sw2 -> B, but really swapped:
+    write_meta("sw1", {"name": nb_, "toolUseId": "tB"})
+    run(stop("sw1", session=s) | {"transcript_path": TX}, env())
+    check("after the swapped agent stops, its TRUE name is free and the other stays live",
+          live(s) == {na_}, f"live={live(s)} a={na_} b={nb_}")
+    write_meta("sw2", {"name": na_, "toolUseId": "tA"})
+    run(stop("sw2", session=s) | {"transcript_path": TX}, env())
+    check("the partner's Stop then releases the other name", live(s) == set(), str(live(s)))
+    rc, out = run({"hook_event_name": "Stop", "session_id": s}, env())
+    msg = (out or {}).get("systemMessage") or ""
+    check("the mix-up is reported once, naming both", "mix-up" in msg and na_ in msg and nb_ in msg
+          and msg.count("mix-up") == 1, msg)
+
+    section("hardening — Stop drops a denied dispatch's stale entry")
+    s = "dn"
+    nden = name_of(run(pre(session=s, description="denied", tool_use_id="tD"), env())[1])
+    nok = name_of(run(pre(session=s, description="ok", tool_use_id="tO"), env())[1])
+    run(start("dn1", session=s), env())             # pops the DENIED entry by FIFO
+    write_meta("dn1", {"name": nok, "toolUseId": "tO"})
+    run(stop("dn1", session=s) | {"transcript_path": TX}, env())
+    check("the denied name and the agent's true name are both free", live(s) == set(),
+          f"live={live(s)} denied={nden} ok={nok}")
+    rc, out = run(start("dn2", session=s), env())
+    check("the agent's own queue entry was removed (it cannot mispair a later Start)",
+          out is None, str(out))
+
+    section("hardening — a model-supplied name that duplicates a live one is reported")
+    s = "dup"
+    held = name_of(run(pre(session=s), env())[1])
+    run(start("du1", session=s), env())
+    rc, out = run(pre(session=s, name=held), env())
+    check("the model's name is still left alone", out is None, str(out))
+    rc, out = run({"hook_event_name": "Stop", "session_id": s}, env())
+    msg = (out or {}).get("systemMessage") or ""
+    check("the duplicate is reported at the main Stop", held in msg and "already" in msg, msg)
+
     section("fail loud — break it on purpose (NAMED_SUBAGENTS_FAULT_DROP_NAME)")
     e = env()
     e["NAMED_SUBAGENTS_FAULT_DROP_NAME"] = "1"
@@ -299,6 +400,16 @@ with tempfile.TemporaryDirectory() as td:
     ui = ((out or {}).get("hookSpecificOutput") or {}).get("updatedInput") or {}
     check("fault injection drops `name` but keeps the label",
           "name" not in ui and " · probe task" in (ui.get("description") or ""), str(ui))
+
+    section("session locks stay fresh while in use")
+    if PORT != "js":                          # the JS port's lock is create/delete per use
+        lp = cli._queue_path("lk", QD) + ".lock"
+        with open(lp, "w"):
+            pass
+        os.utime(lp, (1, 1))
+        with cli._queue_lock(cli._queue_path("lk", QD)):
+            fresh = os.path.getmtime(lp) > 1000
+        check("acquiring a lock refreshes its mtime (so GC never deletes a live lock)", fresh)
 
     section("state stays bounded")
     ages = os.path.join(QD, "b-old.json")

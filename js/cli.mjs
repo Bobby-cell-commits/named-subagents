@@ -584,8 +584,11 @@ function doctorChecks(opts) {
   const firstSS = iterOurHooks(sh.SubagentStart || []).next().value;
   if (firstSS && isNameHook(firstSS[1])) hooked = false;   // name mode's own SubagentStart entry
   if (nameMode) {
+    const missing = NAME_EVENTS.filter((ev) => ![...iterOurHooks(sh[ev] || [])].some(([, h]) => isNameHook(h)));
     add("INFO", "hook-install",
       `name mode in ${sp}`
+      + (missing.length ? `  ⚠ partial: not registered on ${missing.join(", ")} (no identity/release/`
+        + "alerts there) — re-run `hook install --name`" : "")
       + ((hooked || capture) ? "  ⚠ auto-namer entries also present — re-run `hook install --name`" : ""));
   } else if (hooked) {
     add("INFO", "hook-install",
@@ -641,9 +644,66 @@ function doctorChecks(opts) {
     } catch (e) {
       add("FAIL", "hook-selftest", `${e.name}: ${e.message}`);
     }
+    try {
+      add(...nameSelftest());
+    } catch (e) {
+      add("FAIL", "name-selftest", `${e.name}: ${e.message}`);
+    }
   }
 
   return checks;
+}
+
+/** Run the name-mode chain (PreToolUse -> SubagentStart -> SubagentStop -> Stop)
+ * against throwaway state, then once more with the name dropped, so the alert
+ * path is proven to fire. Returns [status, check, detail]. Mirrors the Python
+ * _name_selftest. */
+function nameSelftest() {
+  const hd = mkdtempSync(join(tmpdir(), "ns-name-"));
+  const qd = join(hd, "q");
+  const led = join(hd, "led.json");
+  const tx = join(hd, "sess.jsonl");
+  const prev = process.env.NAMED_SUBAGENTS_SESSIONS_DIR;
+  process.env.NAMED_SUBAGENTS_SESSIONS_DIR = join(hd, "none");
+  let r1;
+  let r2;
+  try {
+    const chain = (aid, metaName) => {
+      const pre = hookName({ hook_event_name: "PreToolUse", tool_name: "Agent",
+        session_id: "selftest", tool_use_id: `t-${aid}`,
+        tool_input: { description: "security audit", prompt: "Audit auth.",
+          subagent_type: "general-purpose" } }, qd, led);
+      const nm = pre.hookSpecificOutput.updatedInput.name;
+      const st = hookName({ hook_event_name: "SubagentStart", session_id: "selftest",
+        agent_id: aid, agent_type: "general-purpose", transcript_path: tx }, qd);
+      const mp = join(hd, "sess", "subagents", `agent-${aid}.meta.json`);
+      mkdirSync(dirname(mp), { recursive: true });
+      const meta = { toolUseId: `t-${aid}` };
+      if (metaName) meta.name = nm;
+      writeFileSync(mp, JSON.stringify(meta));
+      hookName({ hook_event_name: "SubagentStop", session_id: "selftest", agent_id: aid,
+        agent_type: "general-purpose", transcript_path: tx }, qd);
+      const alert = hookName({ hook_event_name: "Stop", session_id: "selftest" }, qd);
+      const ctx = ((st || {}).hookSpecificOutput || {}).additionalContext || "";
+      const live = liveNames(readBindings(bindingsPath("selftest", qd)), readQueue(queuePath("selftest", qd)));
+      return { nm, ctx, alert, live };
+    };
+    r1 = chain("ok", true);
+    r2 = chain("drop", false);
+  } finally {
+    if (prev === undefined) delete process.env.NAMED_SUBAGENTS_SESSIONS_DIR;
+    else process.env.NAMED_SUBAGENTS_SESSIONS_DIR = prev;
+    rmSync(hd, { recursive: true, force: true });
+  }
+  const ok = !!r1.nm && r1.ctx.includes(`\`[${r1.nm}]\``) && r1.alert === null && r1.live.size === 0;
+  const ok2 = !!r2.alert && (r2.alert.systemMessage || "").includes(r2.nm);
+  if (ok && ok2) {
+    return ["PASS", "name-selftest",
+      "name mode picks a name, injects its identity, releases it, and alerts on a dropped name"];
+  }
+  return ["FAIL", "name-selftest",
+    `unexpected: name=${JSON.stringify(r1.nm)} alert=${JSON.stringify(r1.alert)} `
+    + `live=${JSON.stringify([...r1.live].sort())} drop-alert=${JSON.stringify(r2.alert)}`];
 }
 
 function cmdDoctor(opts) {
@@ -1098,6 +1158,9 @@ function namePre(event, queueDir = null, ledgerPath = null) {
   const given = str(ti.name).trim();
   const { registry: reg } = loadWithConfig(null, null, false);
   const entry = { role, ts: Date.now() / 1000 };
+  if (typeof event.tool_use_id === "string" && event.tool_use_id) {
+    entry.tuid = event.tool_use_id;       // == meta.json toolUseId: SubagentStop's exact key
+  }
   if (given) {
     entry.name = given;
     entry.own = false;
@@ -1113,19 +1176,35 @@ function namePre(event, queueDir = null, ledgerPath = null) {
   pruneState(queueDir);
   withLedgerLock(qpath, () => {
     const queue = readQueue(qpath);
+    const live = liveNames(readBindings(bindingsPath(sid, queueDir)), queue);
+    if (given && live.has(given)) {
+      recordAlert(sid, queueDir, `named-subagents: the model dispatched a new agent named ${given}, `
+        + `but a live agent already holds that name — SendMessage(to: ${given}) will reach `
+        + "only the newest.");
+    }
     if (entry.category !== undefined) {
-      const avoid = liveNames(readBindings(bindingsPath(sid, queueDir)), queue);
-      for (const t of peerSessionTitles()) avoid.add(t);
-      const lp = ledgerPath !== null ? ledgerPath : hookLedgerPath();
-      if (lp) mkdirSync(dirname(lp), { recursive: true });
-      const drawn = withLedgerLock(lp, () => {
-        const led = new Ledger(lp);
-        const n = allocate(entry.category, 1, reg, { ledger: led, avoid: [...avoid] })[0];
-        led.save();
-        return n;
-      });
-      entry.name = stripGen(drawn);
-      entry.own = true;
+      try {
+        const avoid = new Set(live);
+        for (const t of peerSessionTitles()) avoid.add(t);
+        for (const t of installedAgentNames()) avoid.add(t);   // a name must not read as an agent type
+        const lp = ledgerPath !== null ? ledgerPath : hookLedgerPath();
+        if (lp) mkdirSync(dirname(lp), { recursive: true });
+        const drawn = withLedgerLock(lp, () => {
+          const led = new Ledger(lp);
+          const n = allocate(entry.category, 1, reg, { ledger: led, avoid: [...avoid] })[0];
+          led.save();
+          return n;
+        });
+        entry.name = stripGen(drawn);
+        entry.own = true;
+      } catch (e) { // recorded + shown; the dispatch runs unnamed
+        // Queue a placeholder anyway: SubagentStart fires for this dispatch
+        // regardless, and a missing entry would shift every later sibling by one.
+        delete entry.category;
+        entry.skip = true;
+        recordAlert(sid, queueDir, `named-subagents: could not pick a name for a ${role} dispatch `
+          + `(${(e && e.name) || "Error"}: ${(e && e.message) || e}); it ran unnamed.`);
+      }
     }
     queue.push(entry);
     writeQueue(qpath, queue);
@@ -1159,6 +1238,19 @@ function nameStart(event, queueDir = null) {
       writeAtomic(bpath, JSON.stringify({ agents: bindings }));
       return;
     }
+    // CC writes meta.json just after an agent's FIRST SubagentStart, so a Start
+    // that finds it is a resume of an agent we never bound: take its name from
+    // meta.json, never the queue.
+    const mp = metaPath(event, aid);
+    if (mp && isFileQuiet(mp)) {
+      const meta = readJson(mp, {});
+      if (typeof meta.name === "string" && meta.name) {
+        bindings[aid] = { name: meta.name, live: true, own: false, category: null,
+          tuid: typeof meta.toolUseId === "string" ? meta.toolUseId : null, ts: Date.now() / 1000 };
+        writeAtomic(bpath, JSON.stringify({ agents: bindings }));
+      }
+      return;
+    }
     const queue = readQueue(qpath);
     const idx = queue.findIndex((e) => e.role === atype);
     if (idx < 0) return;
@@ -1166,7 +1258,8 @@ function nameStart(event, queueDir = null) {
     writeQueue(qpath, queue);
     if (e.skip || typeof e.name !== "string") return;
     bindings[aid] = { name: e.name, live: true, own: !!e.own,
-      category: e.category === undefined ? null : e.category, ts: Date.now() / 1000 };
+      category: e.category === undefined ? null : e.category,
+      tuid: e.tuid === undefined ? null : e.tuid, ts: Date.now() / 1000 };
     writeAtomic(bpath, JSON.stringify({ agents: bindings }));
     entry = e;
   });
@@ -1190,30 +1283,17 @@ function metaPath(event, aid) {
   return null;
 }
 
-/** The alert text when the subagent's meta.json does not carry `expected`. */
-function nameCheck(event, aid, expected) {
-  const mp = metaPath(event, aid);
-  if (!mp || !isFileQuiet(mp)) {
-    return `named-subagents: cannot verify ${expected}'s name — its meta.json is `
-      + `missing (${mp || "no transcript path in the SubagentStop event"}). `
-      + "Claude Code may have changed how it records subagents.";
-  }
-  const got = readJson(mp, {}).name;
-  if (typeof got !== "string" || !got) {
-    return `named-subagents: ${expected} was dispatched with \`name\` but Claude Code `
-      + "did not record it — the task tree likely showed the agent type instead. "
-      + "`name` may no longer be honored; the label still carries the name.";
-  }
-  if (got !== expected) {
-    return `named-subagents: identity mix-up — the agent shown as ${got} was told it `
-      + `is ${expected}. Its [Name] report line will not match the tree.`;
-  }
-  return null;
+/** Queue an alert for the main agent's Stop hook to show (nameMainStop). */
+function recordAlert(sessionId, queueDir, msg) {
+  appendFileSync(alertsPath(sessionId, queueDir), JSON.stringify({ msg, ts: Date.now() / 1000 }) + "\n");
 }
 
-/** SubagentStop: release by agent_id (a not-live agent is a no-op), then check
- * meta.json and RECORD a failure — CC drops a SubagentStop systemMessage, so the
- * main agent's Stop shows it. Always returns null. */
+/** SubagentStop: release by agent_id (a not-live agent is a no-op), then check it
+ * against meta.json, whose `toolUseId` is the dispatch's PreToolUse tool_use_id.
+ * A differing toolUseId means Start paired the wrong entry: swap back with the
+ * live agent that holds it, else drop this agent's own (still-queued) entry.
+ * Alerts are RECORDED for the main Stop (CC drops SubagentStop systemMessage).
+ * Mirrors the Python _name_stop. Always returns null. */
 function nameStop(event, queueDir = null) {
   const aid = event.agent_id;
   if (typeof aid !== "string" || !aid) return null;
@@ -1225,12 +1305,40 @@ function nameStop(event, queueDir = null) {
     const bindings = readBindings(bpath);
     const rec = bindings[aid];
     if (!hasOwn(bindings, aid) || !rec.live) return;
+    const told = rec.name;
+    const mp = metaPath(event, aid);
+    const meta = mp && isFileQuiet(mp) ? readJson(mp, {}) : null;
+    const got = meta && typeof meta.name === "string" && meta.name ? meta.name : null;
+    const mt = meta ? meta.toolUseId : null;
+    let alert = null;
+    if (typeof mt === "string" && mt && rec.tuid && mt !== rec.tuid) {
+      const other = Object.entries(bindings)
+        .find(([k, r]) => k !== aid && r.live && r.tuid === mt);
+      if (other) {
+        const keys = ["name", "own", "category", "tuid"];
+        const mine = Object.fromEntries(keys.map((k) => [k, rec[k] === undefined ? null : rec[k]]));
+        for (const k of keys) rec[k] = other[1][k] === undefined ? null : other[1][k];
+        Object.assign(other[1], mine);
+      } else {
+        writeQueue(qpath, readQueue(qpath).filter((e) => e.tuid !== mt));
+      }
+      alert = `named-subagents: identity mix-up — the agent shown as ${got || rec.name} `
+        + `was told it is ${told}. Its [Name] report line will not match the tree.`;
+    } else if (meta === null) {
+      alert = `named-subagents: cannot verify ${told}'s name — its meta.json is `
+        + `missing (${mp || "no transcript path in the SubagentStop event"}). `
+        + "Claude Code may have changed how it records subagents.";
+    } else if (got === null) {
+      alert = `named-subagents: ${told} was dispatched with \`name\` but Claude Code `
+        + "did not record it — the task tree likely showed the agent type instead. "
+        + "`name` may no longer be honored; the label still carries the name.";
+    } else if (got !== told) {
+      alert = `named-subagents: identity mix-up — the agent shown as ${got} was told `
+        + `it is ${told}. Its [Name] report line will not match the tree.`;
+    }
     Object.assign(rec, { live: false, ts: Date.now() / 1000 });
     writeAtomic(bpath, JSON.stringify({ agents: bindings }));
-    const alert = nameCheck(event, aid, rec.name);
-    if (alert) {
-      appendFileSync(alertsPath(sid, queueDir), JSON.stringify({ msg: alert, ts: Date.now() / 1000 }) + "\n");
-    }
+    if (alert) recordAlert(sid, queueDir, alert);
   });
   return null;
 }

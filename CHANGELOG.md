@@ -30,9 +30,24 @@ drawn from the full ~395-name pool instead of a fixed crew. Design and evidence:
   queued dispatch of the same type, as `meta.json` does not exist yet at that
   point) and injects the identity block, so agents still open with `[Name]`.
 - **SubagentStop** releases by `agent_id`. A SendMessage resume re-fires
-  Start/Stop without a dispatch; Start now recognises the agent and keeps its
-  name, and a Stop for an agent that is not live is a no-op, so it can never free
-  a name another live agent holds.
+  Start/Stop without a dispatch; Start recognises the agent (a known `agent_id`,
+  or a `meta.json` that already exists, which is never the case at a first
+  Start) and keeps its name without touching the queue, and a Stop for an agent
+  that is not live is a no-op, so it can never free a name another live agent
+  holds.
+- **Exact check at SubagentStop.** PreToolUse records the dispatch's
+  `tool_use_id`, which `meta.json` stores as `toolUseId`. When they differ,
+  Start paired the wrong queue entry: Stop swaps the two agents' records back,
+  or drops the agent's still-queued entry if the entry it took belonged to a
+  dispatch that never started (a denied dispatch still runs PreToolUse). The
+  live-name set stays correct and a mix-up alert is shown.
+- A failed pick still queues a placeholder (and records an alert), so one
+  failure can't shift every later sibling's identity by one. A model-supplied
+  `name` that duplicates a live one is reported. Picks also skip installed
+  agent names. Lock files are touched on use so state GC never deletes a live
+  one. The plugin stands down per event, not wholesale, next to a settings.json
+  install. `doctor` flags a partial name-mode install and self-tests the name
+  chain, including the dropped-name alert.
 - `hook install --name` registers name mode in settings.json (`--roster` is kept
   as an alias). `hook run --retype`/`--release` (0.5/0.6 registrations) now run
   name mode. `hook status`/`doctor` report name mode (`name_installed`,
@@ -62,6 +77,11 @@ drawn from the full ~395-name pool instead of a fixed crew. Design and evidence:
 Update the plugin, then remove the old callsign files:
 `named-subagents roster uninstall --dry-run`, then without `--dry-run`. Start a
 new session afterwards so its agent list drops them.
+
+### Cost
+The `Stop` registration runs `python3` at the end of every main-agent turn
+(~90 ms measured, mostly interpreter start-up; it reads one file when there is
+nothing to report).
 
 ### Not yet verified
 Foreground dispatch rendering (every captured run was background), and a name

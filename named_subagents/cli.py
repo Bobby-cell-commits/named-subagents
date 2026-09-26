@@ -431,8 +431,12 @@ def _doctor_checks(args):
     if hooked and _is_name_hook(hooked[1]):
         hooked = None                   # name mode's own SubagentStart entry
     if name_mode:
+        missing = [ev for ev in _NAME_EVENTS if not any(
+            _is_name_hook(h) for _m, h in _iter_our_hooks(_sh.get(ev) or []))]
         add("INFO", "hook-install",
             f"name mode in {sp}"
+            + (f"  ⚠ partial: not registered on {', '.join(missing)} (no identity/release/"
+               f"alerts there) — re-run `hook install --name`" if missing else "")
             + ("  ⚠ auto-namer entries also present — re-run `hook install --name`"
                if (hooked or capture) else ""))
     elif hooked:
@@ -482,8 +486,66 @@ def _doctor_checks(args):
                 if ok and ok2 else f"unexpected output: {out if not ok else out2}")
         except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
             add("FAIL", "hook-selftest", f"{type(e).__name__}: {e}")
+        try:
+            add(*_name_selftest())
+        except Exception as e:  # noqa: BLE001 — doctor reports, never crashes
+            add("FAIL", "name-selftest", f"{type(e).__name__}: {e}")
 
     return checks
+
+
+def _name_selftest():
+    """Run the name-mode chain (PreToolUse -> SubagentStart -> SubagentStop ->
+    Stop) against throwaway state, then once more with the name dropped, so the
+    alert path is proven to fire. Returns (status, check, detail). Exercises the
+    hooks' output only; Claude Code's handling is verified live in the tests."""
+    with tempfile.TemporaryDirectory() as hd:
+        qd, led = os.path.join(hd, "q"), os.path.join(hd, "led.json")
+        tx = os.path.join(hd, "sess.jsonl")
+        prev = os.environ.get("NAMED_SUBAGENTS_SESSIONS_DIR")
+        os.environ["NAMED_SUBAGENTS_SESSIONS_DIR"] = os.path.join(hd, "none")
+        try:
+            def chain(aid, meta_name):
+                pre = _hook_name({"hook_event_name": "PreToolUse", "tool_name": "Agent",
+                                  "session_id": "selftest", "tool_use_id": "t-" + aid,
+                                  "tool_input": {"description": "security audit",
+                                                 "prompt": "Audit auth.",
+                                                 "subagent_type": "general-purpose"}},
+                                 queue_dir=qd, ledger_path=led)
+                nm = pre["hookSpecificOutput"]["updatedInput"].get("name")
+                st = _hook_name({"hook_event_name": "SubagentStart", "session_id": "selftest",
+                                 "agent_id": aid, "agent_type": "general-purpose",
+                                 "transcript_path": tx}, queue_dir=qd)
+                mp = os.path.join(hd, "sess", "subagents", f"agent-{aid}.meta.json")
+                os.makedirs(os.path.dirname(mp), exist_ok=True)
+                meta = {"toolUseId": "t-" + aid}
+                if meta_name:
+                    meta["name"] = nm
+                with open(mp, "w", encoding="utf-8") as fh:
+                    json.dump(meta, fh)
+                _hook_name({"hook_event_name": "SubagentStop", "session_id": "selftest",
+                            "agent_id": aid, "agent_type": "general-purpose",
+                            "transcript_path": tx}, queue_dir=qd)
+                alert = _hook_name({"hook_event_name": "Stop", "session_id": "selftest"},
+                                   queue_dir=qd)
+                ctx = ((st or {}).get("hookSpecificOutput") or {}).get("additionalContext", "")
+                return nm, ctx, alert, _name_live("selftest", qd)
+            nm, ctx, alert, live = chain("ok", True)
+            ok = bool(nm) and f"`[{nm}]`" in ctx and alert is None and not live
+            nm2, _c, alert2, _l = chain("drop", False)
+            ok2 = bool(alert2) and nm2 in alert2.get("systemMessage", "")
+        finally:
+            if prev is None:
+                os.environ.pop("NAMED_SUBAGENTS_SESSIONS_DIR", None)
+            else:
+                os.environ["NAMED_SUBAGENTS_SESSIONS_DIR"] = prev
+    if ok and ok2:
+        return ("PASS", "name-selftest",
+                "name mode picks a name, injects its identity, releases it, and "
+                "alerts on a dropped name")
+    return ("FAIL", "name-selftest",
+            f"unexpected: name={nm!r} identity={'ok' if nm and nm in ctx else 'missing'} "
+            f"alert={alert!r} live={sorted(live)} drop-alert={alert2!r}")
 
 
 def cmd_doctor(args):
@@ -606,10 +668,14 @@ def _hook_queue_dir() -> str:
     return os.path.join(base, "named-subagents", "queue")
 
 
-def _queue_path(session_id, queue_dir=None) -> str:
+def _sid_slug(session_id) -> str:
+    """A session id made safe for a state-file name."""
     sid = session_id if isinstance(session_id, str) else ""
-    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80] or "nosession"
-    return os.path.join(queue_dir or _hook_queue_dir(), f"q-{sid}.jsonl")
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80] or "nosession"
+
+
+def _queue_path(session_id, queue_dir=None) -> str:
+    return os.path.join(queue_dir or _hook_queue_dir(), f"q-{_sid_slug(session_id)}.jsonl")
 
 
 class _queue_lock:
@@ -631,6 +697,10 @@ class _queue_lock:
         while True:
             try:
                 fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Refresh the mtime: _prune_state deletes locks by age, and a lock
+                # file in use must never look stale (deleting it while held would
+                # let the next process lock a fresh file and break exclusion).
+                os.utime(self._lock_path, None)
                 return self
             except OSError:
                 if time.monotonic() > deadline:
@@ -689,40 +759,11 @@ def _queue_pop(session_id, agent_type, queue_dir=None):
     qpath = _queue_path(session_id, queue_dir)
     if not os.path.exists(qpath):
         return None
-    popped = None
     with _queue_lock(qpath):
-        try:
-            with open(qpath, "r", encoding="utf-8") as fh:
-                lines = fh.read().splitlines()
-        except OSError:
-            return None
-        now = time.time()
-        entries = []
-        for line in lines:
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(e, dict) and now - float(e.get("ts") or 0) <= _QUEUE_TTL_SECONDS:
-                entries.append(e)
-        keep = []
-        for e in entries:
-            if popped is None and e.get("role") == agent_type:
-                popped = e
-            else:
-                keep.append(e)
-        if keep:
-            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(qpath) or ".",
-                                       prefix=os.path.basename(qpath) + ".", suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                for e in keep:
-                    fh.write(json.dumps(e, ensure_ascii=False) + "\n")
-            os.replace(tmp, qpath)
-        else:
-            try:
-                os.unlink(qpath)
-            except OSError:
-                pass
+        queue = _read_queue(qpath)
+        idx = next((i for i, e in enumerate(queue) if e.get("role") == agent_type), None)
+        popped = queue.pop(idx) if idx is not None else None
+        _write_queue(qpath, queue)
     return popped
 
 
@@ -878,8 +919,7 @@ def _load_roster(path=None):
 
 
 def _bindings_path(session_id, queue_dir=None) -> str:
-    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id if isinstance(session_id, str) else "")[:80]
-    return os.path.join(queue_dir or _hook_queue_dir(), f"b-{sid or 'nosession'}.json")
+    return os.path.join(queue_dir or _hook_queue_dir(), f"b-{_sid_slug(session_id)}.json")
 
 
 def _prune_state(queue_dir=None) -> None:
@@ -914,9 +954,16 @@ def _read_json(path, default):
 def _write_json_atomic(path, data) -> None:
     d = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _read_queue(qpath):
@@ -1019,6 +1066,9 @@ def _name_pre(event, queue_dir=None, ledger_path=None):
     given = _str(ti.get("name")).strip()
     reg, _cfg = _hook_registry()
     entry = {"role": role, "ts": time.time()}
+    tuid = event.get("tool_use_id")
+    if isinstance(tuid, str) and tuid:
+        entry["tuid"] = tuid              # == meta.json toolUseId: SubagentStop's exact key
     if given:
         entry.update(name=given, own=False)
     elif _PERSONA_SIG in prompt or (not prompt and description and any(
@@ -1034,16 +1084,32 @@ def _name_pre(event, queue_dir=None, ledger_path=None):
     _prune_state(queue_dir)
     with _queue_lock(qpath):
         queue = _read_queue(qpath)
+        live = _live_names(_read_bindings(_bindings_path(sid, queue_dir)), queue)
+        if given and given in live:
+            _record_alert(sid, queue_dir, (
+                f"named-subagents: the model dispatched a new agent named {given}, but a "
+                f"live agent already holds that name — SendMessage(to: {given}) will reach "
+                f"only the newest."))
         if "category" in entry:
-            avoid = _live_names(_read_bindings(_bindings_path(sid, queue_dir)), queue)
-            avoid |= _peer_session_titles()
-            led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
-            if led.path:
-                os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
-            with led.lock(timeout=10):
-                drawn = allocate(entry["category"], 1, reg, ledger=led, avoid=avoid)[0]
-                led.save()
-            entry.update(name=_strip_gen(drawn), own=True)
+            try:
+                avoid = live | _peer_session_titles()
+                avoid |= installed_agent_names()      # a name must not read as an agent type
+                led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
+                if led.path:
+                    os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
+                with led.lock(timeout=10):
+                    drawn = allocate(entry["category"], 1, reg, ledger=led, avoid=avoid)[0]
+                    led.save()
+                entry.update(name=_strip_gen(drawn), own=True)
+            except Exception as e:  # noqa: BLE001 — recorded + shown; the dispatch runs unnamed
+                # Queue a placeholder anyway: SubagentStart fires for this dispatch
+                # regardless, and a missing entry would shift every later sibling's
+                # identity by one.
+                entry.pop("category", None)
+                entry["skip"] = True
+                _record_alert(sid, queue_dir, (
+                    f"named-subagents: could not pick a name for a {role} dispatch "
+                    f"({type(e).__name__}: {e}); it ran unnamed."))
         queue.append(entry)
         _write_queue(qpath, queue)
     if not entry.get("own"):
@@ -1079,6 +1145,19 @@ def _name_start(event, queue_dir=None):
             bindings[aid].update(live=True, ts=time.time())
             _write_json_atomic(bpath, {"agents": bindings})
             return None
+        # CC writes meta.json just after an agent's FIRST SubagentStart, so a Start
+        # that finds it is a resume of an agent we never bound (CLI-named, pre-dates
+        # the binding file, or GC'd): take its name from meta.json, never the queue.
+        mp = _meta_path(event, aid)
+        if mp and os.path.isfile(mp):
+            meta = _read_json(mp, {})
+            nm, mt = meta.get("name"), meta.get("toolUseId")
+            if isinstance(nm, str) and nm:
+                bindings[aid] = {"name": nm, "live": True, "own": False, "category": None,
+                                 "tuid": mt if isinstance(mt, str) else None,
+                                 "ts": time.time()}
+                _write_json_atomic(bpath, {"agents": bindings})
+            return None
         queue = _read_queue(qpath)
         idx = next((i for i, e in enumerate(queue) if e.get("role") == atype), None)
         if idx is None:
@@ -1088,7 +1167,8 @@ def _name_start(event, queue_dir=None):
         if entry.get("skip") or not isinstance(entry.get("name"), str):
             return None
         bindings[aid] = {"name": entry["name"], "live": True, "own": bool(entry.get("own")),
-                         "category": entry.get("category"), "ts": time.time()}
+                         "category": entry.get("category"), "tuid": entry.get("tuid"),
+                         "ts": time.time()}
         _write_json_atomic(bpath, {"agents": bindings})
     if not entry.get("own"):
         return None
@@ -1114,36 +1194,31 @@ def _meta_path(event, aid):
 
 
 def _alerts_path(session_id, queue_dir=None) -> str:
-    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id if isinstance(session_id, str) else "")[:80]
-    return os.path.join(queue_dir or _hook_queue_dir(), f"a-{sid or 'nosession'}.jsonl")
+    return os.path.join(queue_dir or _hook_queue_dir(), f"a-{_sid_slug(session_id)}.jsonl")
 
 
-def _name_check(event, aid, expected):
-    """The alert text when the subagent's meta.json does not carry `expected`,
-    else None. It is the detector for CC ceasing to honor `name` (and for a
-    Start paired with the wrong dispatch)."""
-    mp = _meta_path(event, aid)
-    if not mp or not os.path.isfile(mp):
-        return (f"named-subagents: cannot verify {expected}'s name — its meta.json is "
-                f"missing ({mp or 'no transcript path in the SubagentStop event'}). "
-                f"Claude Code may have changed how it records subagents.")
-    got = _read_json(mp, {}).get("name")
-    if not isinstance(got, str) or not got:
-        return (f"named-subagents: {expected} was dispatched with `name` but Claude Code "
-                f"did not record it — the task tree likely showed the agent type instead. "
-                f"`name` may no longer be honored; the label still carries the name.")
-    if got != expected:
-        return (f"named-subagents: identity mix-up — the agent shown as {got} was told it "
-                f"is {expected}. Its [Name] report line will not match the tree.")
-    return None
+def _record_alert(session_id, queue_dir, msg) -> None:
+    """Queue an alert for the main agent's Stop hook to show (_name_main_stop)."""
+    with open(_alerts_path(session_id, queue_dir), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"msg": msg, "ts": time.time()}, ensure_ascii=False) + "\n")
 
 
 def _name_stop(event, queue_dir=None):
     """SubagentStop: release the agent's name by agent_id (a Stop for an agent that
-    is not live — unknown, or already released — is a no-op), then check its
-    meta.json. A failed check is RECORDED, not emitted: CC 2.1.283 drops a
-    SubagentStop systemMessage (it renders one from PreToolUse/PostToolUse/Stop),
-    so the main agent's Stop hook shows it (_name_main_stop). Always returns None
+    is not live — unknown, or already released — is a no-op), then check it
+    against meta.json, whose `toolUseId` is the dispatch's PreToolUse
+    `tool_use_id`: the one exact key CC exposes (SubagentStart has none).
+
+    - toolUseId differs from the bound dispatch: Start paired the wrong queue
+      entry. If another live agent holds that dispatch, the two swapped; swap
+      their records back. Otherwise the bound entry was a dispatch that never
+      started (denied/errored); drop this agent's own entry from the queue so it
+      cannot mispair a later Start. Either way the live set ends up correct, and
+      a mix-up alert is recorded (the agent was told the wrong [Name]).
+    - Otherwise: meta.json missing, or `name` missing/different, is recorded.
+
+    Alerts are RECORDED, not emitted: CC 2.1.283 drops a SubagentStop
+    systemMessage, so the main agent's Stop hook shows them. Always returns None
     (a SubagentStop `decision` could block the stop)."""
     if not isinstance(event, dict):
         return None
@@ -1159,12 +1234,42 @@ def _name_stop(event, queue_dir=None):
         rec = bindings.get(aid)
         if not rec or not rec.get("live"):
             return None
+        told = rec.get("name")
+        mp = _meta_path(event, aid)
+        meta = _read_json(mp, {}) if mp and os.path.isfile(mp) else None
+        got = (meta or {}).get("name")
+        got = got if isinstance(got, str) and got else None
+        mt = (meta or {}).get("toolUseId")
+        alert = None
+        if isinstance(mt, str) and mt and rec.get("tuid") and mt != rec.get("tuid"):
+            other = next((r for k, r in bindings.items()
+                          if k != aid and r.get("live") and r.get("tuid") == mt), None)
+            if other is not None:
+                keys = ("name", "own", "category", "tuid")
+                mine = {k: rec.get(k) for k in keys}
+                rec.update({k: other.get(k) for k in keys})
+                other.update(mine)
+            else:
+                queue = _read_queue(qpath)
+                _write_queue(qpath, [e for e in queue if e.get("tuid") != mt])
+            alert = (f"named-subagents: identity mix-up — the agent shown as "
+                     f"{got or rec.get('name')} was told it is {told}. Its [Name] report "
+                     f"line will not match the tree.")
+        elif meta is None:
+            alert = (f"named-subagents: cannot verify {told}'s name — its meta.json is "
+                     f"missing ({mp or 'no transcript path in the SubagentStop event'}). "
+                     f"Claude Code may have changed how it records subagents.")
+        elif got is None:
+            alert = (f"named-subagents: {told} was dispatched with `name` but Claude Code "
+                     f"did not record it — the task tree likely showed the agent type instead. "
+                     f"`name` may no longer be honored; the label still carries the name.")
+        elif got != told:
+            alert = (f"named-subagents: identity mix-up — the agent shown as {got} was told "
+                     f"it is {told}. Its [Name] report line will not match the tree.")
         rec.update(live=False, ts=time.time())
         _write_json_atomic(bpath, {"agents": bindings})
-        alert = _name_check(event, aid, rec.get("name"))
         if alert:
-            with open(_alerts_path(sid, queue_dir), "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"msg": alert, "ts": time.time()}, ensure_ascii=False) + "\n")
+            _record_alert(sid, queue_dir, alert)
     return None
 
 
@@ -1276,10 +1381,12 @@ def cmd_roster(args):
     return 0
 
 
-def _settings_hooks_present(cwd=None):
+def _settings_hooks_present(cwd=None, event_name=None):
     """True when a settings.json-registered copy of our hooks (from `hook install`)
-    is active. The plugin's hooks then stand down: both copies would each claim a
-    callsign for the same dispatch, and the loser would stay held."""
+    handles this event. The plugin's hook then stands down for that event, so two
+    copies never both name one dispatch. Checked per event: a 0.5/0.6 install
+    registered only PreToolUse + SubagentStop, and the plugin must still run
+    SubagentStart (identity) and Stop (alerts) next to it."""
     paths = [os.path.join(os.path.expanduser("~"), ".claude", "settings.json")]
     if isinstance(cwd, str) and cwd:
         paths += [os.path.join(cwd, ".claude", n)
@@ -1288,7 +1395,10 @@ def _settings_hooks_present(cwd=None):
         data, err = _read_settings(sp)
         if err:
             continue
-        for ev_hooks in (data.get("hooks") or {}).values():
+        hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+        for ev, ev_hooks in hooks.items():
+            if event_name and ev != event_name:
+                continue
             if any(True for _ in _iter_our_hooks(ev_hooks)):
                 return True
     return False
@@ -1318,7 +1428,7 @@ def cmd_hook_run(args=None, argv=None):
         ev = event.get("hook_event_name") if isinstance(event, dict) else None
         if ("--plugin" in (argv or []) and not os.environ.get("NAMED_SUBAGENTS_PLUGIN_FORCE")
                 and _settings_hooks_present(
-                    event.get("cwd") if isinstance(event, dict) else None)):
+                    event.get("cwd") if isinstance(event, dict) else None, ev)):
             return 0                      # a settings.json install already handles it
         if name_mode:
             top = _hook_name(event)
