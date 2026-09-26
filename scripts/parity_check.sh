@@ -114,26 +114,28 @@ $JS init --path "$TMP/js-init.json" > /dev/null
 diff -u "$TMP/py-init.json" "$TMP/js-init.json" > /dev/null || fail "init config differs"
 echo "  [PASS] init scaffolds an identical config"
 
-# 11 — v0.5.0 roster: generation is byte-identical (agent files + manifest map),
-#      and the retype hook rewrites subagent_type identically off a shared manifest
-$PY roster install --dir "$TMP/ros-py" --state "$TMP/ros-py.json" --count 5 > /dev/null
-$JS roster install --dir "$TMP/ros-js" --state "$TMP/ros-js.json" --count 5 > /dev/null
-for f in "$TMP/ros-py"/*.md; do
-  diff -u "$f" "$TMP/ros-js/$(basename "$f")" > /dev/null \
-    || fail "roster agent file $(basename "$f") differs"
+# 11 — v0.7.0 name mode: the PreToolUse -> SubagentStart -> SubagentStop -> Stop
+#      chain emits identical output (name + label, identity block, the alert).
+mkdir -p "$TMP/nm-sess" "$TMP/nm-meta/subagents"
+printf '%s' '{"agentType":"general-purpose"}' > "$TMP/nm-meta/subagents/agent-a1.meta.json"
+for port in py js; do
+  if [ "$port" = py ]; then CLI=$PY; else CLI=$JS; fi
+  nm_env() { NAMED_SUBAGENTS_QUEUE_DIR="$TMP/nm-q-$port" NAMED_SUBAGENTS_LEDGER="$TMP/nm-led-$port.json" \
+    NAMED_SUBAGENTS_SESSIONS_DIR="$TMP/nm-sess" "$@"; }
+  for ev in \
+    '{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"nm","tool_input":{"description":"security audit","prompt":"Audit auth.","subagent_type":"general-purpose"}}' \
+    '{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"nm","tool_input":{"description":"map the repo","prompt":"Map it.","subagent_type":"Explore"}}' \
+    '{"hook_event_name":"SubagentStart","session_id":"nm","agent_id":"a1","agent_type":"general-purpose"}' \
+    '{"hook_event_name":"SubagentStart","session_id":"nm","agent_id":"a2","agent_type":"Explore"}' \
+    "{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"nm\",\"agent_id\":\"a1\",\"agent_type\":\"general-purpose\",\"agent_transcript_path\":\"$TMP/nm-meta/subagents/agent-a1.jsonl\"}" \
+    '{"hook_event_name":"Stop","session_id":"nm"}'; do
+    printf '%s' "$ev" | nm_env $CLI hook run --name
+    echo
+  done > "$TMP/nm-$port.txt"
 done
-python3 -c "
-import json,sys
-py=json.load(open('$TMP/ros-py.json')); js=json.load(open('$TMP/ros-js.json'))
-sys.exit(0 if py['agents']==js['agents'] and sorted(py['files'])==sorted(js['files']) else 1)
-" || fail "roster manifest differs"
-REV='{"hook_event_name":"PreToolUse","tool_name":"Agent","session_id":"parity-r","tool_input":{"description":"security audit","prompt":"Audit auth.","subagent_type":"general-purpose"}}'
-printf '%s' "$REV" | NAMED_SUBAGENTS_ROSTER="$TMP/ros-py.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/rq-py" \
-  NAMED_SUBAGENTS_LEDGER="$TMP/ros-led.json" $PY hook run --retype > "$TMP/py-retype.json"
-printf '%s' "$REV" | NAMED_SUBAGENTS_ROSTER="$TMP/ros-py.json" NAMED_SUBAGENTS_QUEUE_DIR="$TMP/rq-js" \
-  NAMED_SUBAGENTS_LEDGER="$TMP/ros-led.json" $JS hook run --retype > "$TMP/js-retype.json"
-diff -u "$TMP/py-retype.json" "$TMP/js-retype.json" > /dev/null || fail "roster retype output differs"
-grep -q '"subagent_type"' "$TMP/py-retype.json" || fail "retype did not rewrite subagent_type"
-echo "  [PASS] v0.5.0 roster generation + retype identical"
+diff -u "$TMP/nm-py.txt" "$TMP/nm-js.txt" > /dev/null || fail "name-mode chain output differs"
+grep -q '"name": ' "$TMP/nm-py.txt" || fail "name mode did not set name"
+grep -q 'did not record it' "$TMP/nm-py.txt" || fail "name mode did not surface the dropped-name alert"
+echo "  [PASS] v0.7.0 name-mode chain (pick, identity, alert) identical"
 
 echo "PARITY OK"

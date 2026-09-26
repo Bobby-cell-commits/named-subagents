@@ -18,12 +18,11 @@ Examples
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -33,7 +32,6 @@ import named_subagents as ns
 from named_subagents import (
     Ledger,
     LEDGER_VERSION,
-    PoolExhaustedError,
     Registry,
     __version__,
     allocate,
@@ -422,20 +420,20 @@ def _doctor_checks(args):
     _sh = sdata.get("hooks")
     _sh = _sh if isinstance(_sh, dict) else {}
     hooked = next(_iter_our_hooks(_sh.get("SubagentStart") or []), None)
-    legacy, capture, retype = False, False, False
+    legacy, capture, name_mode = False, False, False
     for _m, h in _iter_our_hooks(_sh.get("PreToolUse") or []):
         if _is_capture_hook(h):
             capture = True              # the v0.4.3 task-capture entry, NOT legacy
-        elif _is_retype_hook(h):
-            retype = True               # the v0.5.0 roster-mode entry, NOT legacy
+        elif _is_name_hook(h):
+            name_mode = True            # name mode (or a 0.5/0.6 retype entry it now runs)
         else:
             legacy = True
-    if retype:
-        ros = _load_roster()
+    if hooked and _is_name_hook(hooked[1]):
+        hooked = None                   # name mode's own SubagentStart entry
+    if name_mode:
         add("INFO", "hook-install",
-            f"roster mode (PreToolUse retype) in {sp}"
-            + ("" if ros else "  ⚠ no roster manifest — run `named-subagents roster install`")
-            + ("  ⚠ auto-namer entries also present — re-run `hook install --roster`"
+            f"name mode in {sp}"
+            + ("  ⚠ auto-namer entries also present — re-run `hook install --name`"
                if (hooked or capture) else ""))
     elif hooked:
         add("INFO", "hook-install",
@@ -827,26 +825,33 @@ def _hook_subagent_start(event, ledger_path=None, queue_dir=None):
     return {"hookEventName": "SubagentStart", "additionalContext": context}
 
 
-# ---- roster mode (v0.5.0): visible names in the live task tree ------------- #
-# Claude Code's task-tree label is the agent-definition NAME (hardcoded — no
-# per-instance field exists; claude-code#9206 closed unplanned). Roster mode makes
-# the name the definition: `roster install` generates persona agent files (clones
-# of a base agent + persona preamble), and a PreToolUse hook rewrites
-# `subagent_type` -> a free roster callsign via `updatedInput`, so the tree shows
-# "Durga" where it showed "general-purpose". Viable since the Agent-tool
-# updatedInput multi-hook clobber (claude-code#15897/#39814) was fixed upstream
-# (verified live on CC 2.1.245, 2026-08-26 probe).
-_ROSTER_MARKER = "named-subagents-roster v1"       # sentinel inside generated files
-_ROSTER_USED_TTL = 48 * 3600.0                     # per-session used-files GC horizon
-_ROSTER_GENERIC_BODY = (
-    "You are a capable general agent. Complete the dispatched task thoroughly "
-    "and return a clear, complete report of what you did and found.\n")
+# ---- name mode (v0.7.0): visible names via the Agent tool's `name` field --- #
+# A PreToolUse `updatedInput` that sets `name` makes the live task tree's left
+# column show that name (verified CC 2.1.283 for background general-purpose and
+# Explore; nested children fold under their parent). It costs the main prompt
+# nothing, unlike the v0.5/0.6 roster agent files (~57-183 tokens each, loaded
+# into every session's agent list). `name` is also the SendMessage/ListAgents
+# address, so two LIVE agents must never share one: ListAgents drops the first
+# one's name and SendMessage(to: name) silently reaches the newest.
+#
+# State, per session, under the queue dir (all under one flock):
+#   q-<sid>.jsonl   dispatches waiting for their SubagentStart (role FIFO)
+#   b-<sid>.json    {"agents": {agent_id: {name, live, own, category, ts}}}
+# SubagentStart/Stop carry agent_id + agent_type but NOT the name (and meta.json
+# is written only after SubagentStart fires), so Start pairs with the oldest
+# queued dispatch of its role; Starts arrive in dispatch order. A SendMessage
+# resume re-fires Start/Stop without PreToolUse: Start recognises the agent_id
+# and only marks it live again; Stop releases by agent_id, so a stray or repeated
+# Stop can never free a name another live agent holds.
+_ROSTER_MARKER = "named-subagents-roster v1"       # sentinel in 0.5/0.6 agent files
+_STATE_TTL = 48 * 3600.0                           # per-session state GC horizon
+_DEFAULT_ROLE = "general-purpose"                  # CC's type when subagent_type is omitted
+_NAME_EVENTS = ("PreToolUse", "SubagentStart", "SubagentStop", "Stop")
 
 
 def _roster_state_path() -> str:
-    """Where the roster manifest lives. NAMED_SUBAGENTS_ROSTER overrides; default
-    is per-user state (user-written only — the hook never reads project-local
-    roster state, same trust posture as _hook_registry)."""
+    """Where a 0.5/0.6 roster manifest lives (read only by `roster uninstall`,
+    `roster status` and doctor, to clean up or recognise leftover files)."""
     env = os.environ.get("NAMED_SUBAGENTS_ROSTER")
     if env:
         return env
@@ -856,8 +861,7 @@ def _roster_state_path() -> str:
 
 
 def _load_roster(path=None):
-    """Manifest dict or None. Defensive: malformed/missing -> None (hook falls
-    back to the mutate path), never a crash."""
+    """Manifest dict or None (malformed/missing -> None, never a crash)."""
     p = path or _roster_state_path()
     if not os.path.exists(p):
         return None
@@ -873,54 +877,24 @@ def _load_roster(path=None):
     return data
 
 
-def _save_roster(data, path=None):
-    p = path or _roster_state_path()
-    d = os.path.dirname(os.path.abspath(p)) or "."
-    os.makedirs(d, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(p) + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-        os.replace(tmp, p)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-def _roster_used_path(session_id, queue_dir=None) -> str:
-    sid = session_id if isinstance(session_id, str) else ""
-    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", sid)[:80] or "nosession"
-    return os.path.join(queue_dir or _hook_queue_dir(), f"u-{sid}.json")
-
-
-def _roster_unloaded_path(session_id, queue_dir=None) -> str:
+def _bindings_path(session_id, queue_dir=None) -> str:
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id if isinstance(session_id, str) else "")[:80]
-    return os.path.join(queue_dir or _hook_queue_dir(), f"n-{sid or 'nosession'}.json")
+    return os.path.join(queue_dir or _hook_queue_dir(), f"b-{sid or 'nosession'}.json")
 
 
-def _roster_mark_unloaded(session_id, queue_dir=None) -> None:
-    """Record that this session started before its roster files existed."""
-    p = _roster_unloaded_path(session_id, queue_dir)
-    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-    with open(p, "w", encoding="utf-8") as fh:
-        json.dump({"ts": time.time()}, fh)
-
-
-def _roster_prune_used(queue_dir=None) -> None:
-    """Best-effort GC of stale per-session used-files (sessions end silently), plus
-    their `.lock` sidecars and any other stale queue lock — nothing else deletes
-    those, so without this they accumulate one per session forever."""
+def _prune_state(queue_dir=None) -> None:
+    """Best-effort GC of per-session state older than _STATE_TTL (sessions end
+    silently): binding files, stale `.lock` sidecars, and the u-/n- files the
+    0.5/0.6 roster mode left behind."""
     qd = queue_dir or _hook_queue_dir()
     try:
         now = time.time()
         for fn in os.listdir(qd):
-            if (fn.startswith(("u-", "n-")) and fn.endswith(".json")) or fn.endswith(".lock"):
+            if ((fn.startswith(("b-", "u-", "n-")) and fn.endswith(".json"))
+                    or (fn.startswith("a-") and fn.endswith(".jsonl")) or fn.endswith(".lock")):
                 p = os.path.join(qd, fn)
                 try:
-                    if now - os.path.getmtime(p) > _ROSTER_USED_TTL:
+                    if now - os.path.getmtime(p) > _STATE_TTL:
                         os.unlink(p)
                 except OSError:
                     pass
@@ -928,97 +902,109 @@ def _roster_prune_used(queue_dir=None) -> None:
         pass
 
 
-def _roster_pick(roster, base_type, category, session_id, queue_dir=None):
-    """Pick a free roster callsign for `base_type`, preferring `category`, and
-    record it in the per-session used-file so concurrent siblings never share a
-    name. Names deliberately RECYCLE across sessions (a stable crew, not a
-    one-shot pool — unlike the global hook ledger). Returns (name, category) or
-    (None, None) when every roster name for this base is already live."""
-    per_base = (roster.get("agents") or {}).get(base_type)
-    if not isinstance(per_base, dict):
-        return None, None
-    cats = ([category] if category in per_base else []) + sorted(
-        c for c in per_base if c != category)
-    _roster_prune_used(queue_dir)
-    upath = _roster_used_path(session_id, queue_dir)
-    os.makedirs(os.path.dirname(upath) or ".", exist_ok=True)
-    with _queue_lock(upath):
-        used = set()
+def _read_json(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (ValueError, OSError):
+        return default
+    return data if isinstance(data, type(default)) else default
+
+
+def _write_json_atomic(path, data) -> None:
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(path) + ".", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _read_queue(qpath):
+    """Unexpired queue entries (orphans older than _QUEUE_TTL_SECONDS dropped)."""
+    try:
+        with open(qpath, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    now, out = time.time(), []
+    for line in lines:
         try:
-            with open(upath, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            if isinstance(data, dict):
-                used = {n for n in data.get("used") or [] if isinstance(n, str)}
-        except (ValueError, OSError):
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and now - float(e.get("ts") or 0) <= _QUEUE_TTL_SECONDS:
+            out.append(e)
+    return out
+
+
+def _write_queue(qpath, entries) -> None:
+    if not entries:
+        try:
+            os.unlink(qpath)
+        except OSError:
             pass
-        for c in cats:
-            names = per_base.get(c)
-            for n in names if isinstance(names, list) else []:
-                if isinstance(n, str) and n and n not in used:
-                    used.add(n)
-                    fd, tmp = tempfile.mkstemp(
-                        dir=os.path.dirname(upath) or ".",
-                        prefix=os.path.basename(upath) + ".", suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        json.dump({"used": sorted(used), "ts": time.time()}, fh)
-                    os.replace(tmp, upath)
-                    return n, c
-    return None, None
+        return
+    d = os.path.dirname(qpath) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(qpath) + ".", suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        for e in entries:
+            fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+    os.replace(tmp, qpath)
 
 
-def _roster_release(roster, agent_type, session_id, queue_dir=None):
-    """Return a finished callsign to this session's free pool. Without it a
-    session could name only one crew's worth of dispatches per base — every later
-    dispatch fell back to the description-prefix namer even with the whole crew
-    idle. Returns the released name, or None when `agent_type` is not one of our
-    callsigns or was not held."""
-    if not isinstance(roster, dict) or not isinstance(agent_type, str):
-        return None
-    if agent_type not in (roster.get("files") or {}):
-        return None
-    upath = _roster_used_path(session_id, queue_dir)
-    if not os.path.exists(upath):
-        return None
-    with _queue_lock(upath):
+def _read_bindings(bpath):
+    data = _read_json(bpath, {})
+    agents = data.get("agents")
+    return {k: v for k, v in agents.items() if isinstance(v, dict)} if isinstance(agents, dict) else {}
+
+
+def _live_names(bindings, queue):
+    """Names held by live agents plus names queued for a Start that hasn't fired."""
+    names = {r.get("name") for r in bindings.values() if r.get("live")}
+    names |= {e.get("name") for e in queue if not e.get("skip")}
+    return {n for n in names if isinstance(n, str) and n}
+
+
+def _name_live(session_id, queue_dir=None):
+    """The session's live + pending names (read-only; for tests and status)."""
+    qpath = _queue_path(session_id, queue_dir)
+    return _live_names(_read_bindings(_bindings_path(session_id, queue_dir)), _read_queue(qpath))
+
+
+def _peer_session_titles():
+    """Titles of local Claude Code sessions (~/.claude/sessions/<pid>.json `name`).
+    They share SendMessage's address space with subagent names, so a subagent
+    named like a peer session could be ambiguous. Unreadable files are skipped."""
+    d = os.environ.get("NAMED_SUBAGENTS_SESSIONS_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude", "sessions")
+    titles = set()
+    try:
+        entries = os.listdir(d)
+    except OSError:
+        return titles
+    for fn in entries:
+        if not fn.endswith(".json"):
+            continue
+        p = os.path.join(d, fn)
         try:
-            with open(upath, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (ValueError, OSError):
-            return None
-        used = [n for n in (data.get("used") or []) if isinstance(n, str)] \
-            if isinstance(data, dict) else []
-        if agent_type not in used:
-            return None
-        used.remove(agent_type)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(upath) or ".",
-                                   prefix=os.path.basename(upath) + ".", suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"used": sorted(used), "ts": time.time()}, fh)
-        os.replace(tmp, upath)
-    return agent_type
+            if not stat.S_ISREG(os.stat(p).st_mode) or os.path.getsize(p) > 65536:
+                continue
+        except OSError:
+            continue
+        data = _read_json(p, {})
+        t = data.get("name")
+        if isinstance(t, str) and t:
+            titles.add(t)
+    return titles
 
 
-def _hook_subagent_stop(event, roster=None, queue_dir=None):
-    """SubagentStop handler for roster mode: release the finished agent's callsign.
-    Output-free (a SubagentStop output can block the subagent from stopping), so
-    it always returns None; the release itself is the side effect."""
-    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
-        return None
-    if not isinstance(event, dict):
-        return None
-    ros = roster if roster is not None else _load_roster()
-    _roster_release(ros, event.get("agent_type"), event.get("session_id"), queue_dir)
-    return None
-
-
-def _hook_retype(event, roster=None, queue_dir=None, ledger_path=None):
-    """PreToolUse handler for roster mode: rewrite `subagent_type` to a free
-    roster callsign so the live task tree shows the NAME. Persona delivery is the
-    roster agent file itself (no SubagentStart queue involved). Falls back to
-    `_hook_mutate` (description+prompt naming) when no roster covers the dispatch,
-    and passes through (None) anything already named."""
-    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
-        return None
+def _name_pre(event, queue_dir=None, ledger_path=None):
+    """PreToolUse: pick a name unique among the session's live agents and emit it
+    in `name` plus the `<emoji> Name · task` label (finish notices quote the label,
+    and it is the fallback if CC stops honoring `name`). The prompt is untouched:
+    the identity block arrives via SubagentStart. A model-supplied `name` and a
+    CLI-assigned dispatch pass through; both are still queued so the pairing with
+    SubagentStart stays in step, and a model-supplied name counts as live."""
     if not isinstance(event, dict) or event.get("tool_name") not in _DISPATCH_TOOLS:
         return None
     ti = event.get("tool_input")
@@ -1028,251 +1014,265 @@ def _hook_retype(event, roster=None, queue_dir=None, ledger_path=None):
     def _str(v) -> str:
         return v if isinstance(v, str) else ""
 
-    prompt = _str(ti.get("prompt"))
-    description = _str(ti.get("description"))
-    subagent_type = _str(ti.get("subagent_type"))
-    if _PERSONA_SIG in prompt:
-        return None                       # CLI `assign` already named this dispatch
-    ros = roster if roster is not None else _load_roster()
-    if ros and subagent_type in (ros.get("files") or {}):
-        return None                       # already retyped (a re-fire), or caller
-                                          # dispatched a roster persona directly
-    roster_names = sorted((ros or {}).get("files") or {})
-    if (not ros or subagent_type not in (ros.get("agents") or {})
-            or os.path.exists(_roster_unloaded_path(event.get("session_id"), queue_dir))):
-        return _hook_mutate(event, ledger_path,   # unrostered -> legacy visible naming
-                            avoid=roster_names or None)
-
+    prompt, description = _str(ti.get("prompt")), _str(ti.get("description"))
+    role = _str(ti.get("subagent_type")) or _DEFAULT_ROLE
+    given = _str(ti.get("name")).strip()
     reg, _cfg = _hook_registry()
-    task = (description + "\n" + prompt).strip()
-    cat = resolve_for_hook(reg, role=subagent_type or None, task=task or None)
-    name, used_cat = _roster_pick(ros, subagent_type, cat, event.get("session_id"), queue_dir)
-    if not name:
-        return _hook_mutate(event, ledger_path,   # roster fully live this session
-                            avoid=roster_names or None)
-    emoji = reg.emoji(used_cat if used_cat in reg.categories else "default")
+    entry = {"role": role, "ts": time.time()}
+    if given:
+        entry.update(name=given, own=False)
+    elif _PERSONA_SIG in prompt or (not prompt and description and any(
+            description.startswith(reg.emoji(c)) for c in reg.categories)):
+        entry["skip"] = True
+    else:
+        entry["category"] = resolve_for_hook(
+            reg, role=role, task=(description + "\n" + prompt).strip() or None)
+
+    sid = event.get("session_id")
+    qpath = _queue_path(sid, queue_dir)
+    os.makedirs(os.path.dirname(qpath) or ".", exist_ok=True)
+    _prune_state(queue_dir)
+    with _queue_lock(qpath):
+        queue = _read_queue(qpath)
+        if "category" in entry:
+            avoid = _live_names(_read_bindings(_bindings_path(sid, queue_dir)), queue)
+            avoid |= _peer_session_titles()
+            led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
+            if led.path:
+                os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
+            with led.lock(timeout=10):
+                drawn = allocate(entry["category"], 1, reg, ledger=led, avoid=avoid)[0]
+                led.save()
+            entry.update(name=_strip_gen(drawn), own=True)
+        queue.append(entry)
+        _write_queue(qpath, queue)
+    if not entry.get("own"):
+        return None
+    nm, cat = entry["name"], entry["category"]
     updated = dict(ti)
-    updated["subagent_type"] = name
-    # The name goes in the label too: the type column shows it, but it is truncated
-    # past ~24 chars and the label is what completion notices quote.
-    updated["description"] = (f"{emoji} {name} · {description}".strip()
-                              if description else f"{emoji} {name}")
-    return {"hookEventName": "PreToolUse", "updatedInput": updated}
+    if not os.environ.get("NAMED_SUBAGENTS_FAULT_DROP_NAME"):   # break-it-on-purpose switch
+        updated["name"] = nm
+    emoji = reg.emoji(cat if cat in reg.categories else "default")
+    updated["description"] = (f"{emoji} {nm} · {description}".strip()
+                              if description else f"{emoji} {nm}")
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}}
 
 
-def _agent_md_split(text):
-    """Split a Claude Code agent .md into (frontmatter_lines, body). Frontmatter
-    lines come back verbatim MINUS `name:`/`description:` (the roster clone owns
-    those); no YAML parse, so unknown keys (tools, model, ...) survive untouched.
-    Returns (None, text) when there is no leading frontmatter block."""
-    if not text.startswith("---\n"):
-        return None, text
-    end = text.find("\n---\n", 4)
-    if end < 0:
-        return None, text
-    kept = [ln for ln in text[4:end].splitlines()
-            if not re.match(r"^(name|description)\s*:", ln)]
-    return kept, text[end + 5:]
+def _name_start(event, queue_dir=None):
+    """SubagentStart: bind the oldest queued dispatch of this role to agent_id and
+    inject the identity block (`[Name]` report line), which the roster agent files
+    used to carry. A known agent_id is a SendMessage resume: mark it live again,
+    inject nothing, and leave the queue alone (its entries belong to siblings)."""
+    if not isinstance(event, dict):
+        return None
+    aid = event.get("agent_id")
+    if not isinstance(aid, str) or not aid:
+        return None
+    atype = event.get("agent_type")
+    atype = atype if isinstance(atype, str) and atype else _DEFAULT_ROLE
+    sid = event.get("session_id")
+    qpath, bpath = _queue_path(sid, queue_dir), _bindings_path(sid, queue_dir)
+    os.makedirs(os.path.dirname(qpath) or ".", exist_ok=True)
+    with _queue_lock(qpath):
+        bindings = _read_bindings(bpath)
+        if aid in bindings:
+            bindings[aid].update(live=True, ts=time.time())
+            _write_json_atomic(bpath, {"agents": bindings})
+            return None
+        queue = _read_queue(qpath)
+        idx = next((i for i, e in enumerate(queue) if e.get("role") == atype), None)
+        if idx is None:
+            return None
+        entry = queue.pop(idx)
+        _write_queue(qpath, queue)
+        if entry.get("skip") or not isinstance(entry.get("name"), str):
+            return None
+        bindings[aid] = {"name": entry["name"], "live": True, "own": bool(entry.get("own")),
+                         "category": entry.get("category"), "ts": time.time()}
+        _write_json_atomic(bpath, {"agents": bindings})
+    if not entry.get("own"):
+        return None
+    reg, _cfg = _hook_registry()
+    cat = entry.get("category")
+    theme = reg.theme(cat if cat in reg.categories else "default")
+    bio = reg.bio(cat, entry["name"]) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
+    context = persona_preamble(entry["name"], theme, bio=bio, task_follows=False)
+    return {"hookSpecificOutput": {"hookEventName": "SubagentStart",
+                                   "additionalContext": context}}
 
 
-def _roster_agent_md(name, base_type, category, reg, base_fm, base_body) -> str:
-    """Render one roster agent definition file."""
-    theme = reg.theme(category)
-    # Kept short: every roster file adds this line to each session's agent list.
-    desc = f"Alias of {base_type}; dispatch '{base_type}' instead."
-    fm = ["---", f"name: {name}", f"description: \"{desc}\""]
-    fm += [ln for ln in (base_fm or []) if ln.strip()]
-    fm.append("---")
-    persona = persona_preamble(name, theme, task_follows=False)
-    body = (base_body or "").strip() or _ROSTER_GENERIC_BODY.strip()
-    return ("\n".join(fm) + "\n"
-            + f"<!-- {_ROSTER_MARKER} base={base_type} category={category} -->\n"
-            + persona + "\n" + body + "\n")
-
-
-def _roster_find_base_file(base_type, agents_dir):
-    """Locate an existing definition for `base_type` to clone (its own tools/
-    model/body), searching the target dir then the user agents dir. Built-in
-    types (general-purpose, Explore, ...) have no file -> generic body."""
-    cands = [os.path.join(agents_dir, f"{base_type}.md"),
-             os.path.join(os.path.expanduser("~"), ".claude", "agents", f"{base_type}.md")]
-    for c in cands:
-        if os.path.isfile(c):
-            return c
+def _meta_path(event, aid):
+    """The subagent's meta.json: next to agent_transcript_path, else derived from
+    the session transcript_path (`<dir>/<sid>.jsonl` -> `<dir>/<sid>/subagents/`)."""
+    atp = event.get("agent_transcript_path")
+    if isinstance(atp, str) and atp.endswith(".jsonl"):
+        return atp[:-len(".jsonl")] + ".meta.json"
+    tp = event.get("transcript_path")
+    if isinstance(tp, str) and tp.endswith(".jsonl"):
+        return os.path.join(tp[:-len(".jsonl")], "subagents", f"agent-{aid}.meta.json")
     return None
 
 
-def _roster_ensure(rpath=None, agents_dir=None):
-    """Bring the roster to a usable state without being asked (the plugin runs this
-    at SessionStart). No manifest -> install the default crew. Otherwise re-render
-    any callsign file that is missing, or older than the base agent file it clones,
-    so an edit to e.g. research-subagent.md reaches its callsigns instead of leaving
-    them frozen at install time. Only files carrying the roster marker are touched.
-    Returns a (installed, refreshed) summary."""
-    rpath = rpath or _roster_state_path()
-    ros = _load_roster(rpath)
-    if not ros:
-        argv = ["roster", "install", "--state", rpath]
-        if agents_dir:
-            argv += ["--dir", agents_dir]
-        a = build_parser().parse_args(argv)
-        with contextlib.redirect_stdout(io.StringIO()):
-            cmd_roster(a)
-        ros = _load_roster(rpath)
-        return (len((ros or {}).get("files") or {}), 0)
-    adir = ros.get("dir") or os.path.join(os.path.expanduser("~"), ".claude", "agents")
-    reg, _cfg = _hook_registry()
-    refreshed = 0
-    for base, cats in (ros.get("agents") or {}).items():
-        src = _roster_find_base_file(base, adir)
-        src_m, base_fm, base_body = 0.0, None, None
-        if src:
-            src_m = os.path.getmtime(src)
-            with open(src, "r", encoding="utf-8") as fh:
-                base_fm, base_body = _agent_md_split(fh.read())
-        for c, names in (cats or {}).items():
-            for nm in names if isinstance(names, list) else []:
-                fp = os.path.join(adir, (ros.get("files") or {}).get(nm) or f"{nm}.md")
-                if os.path.exists(fp):
-                    if not (src and src_m > os.path.getmtime(fp)):
-                        continue
-                    with open(fp, "r", encoding="utf-8") as fh:
-                        if _ROSTER_MARKER not in fh.read():
-                            continue      # never overwrite a file we didn't generate
-                cat = c if c in reg.categories else "default"
-                with open(fp, "w", encoding="utf-8") as fh:
-                    fh.write(_roster_agent_md(nm, base, cat, reg, base_fm, base_body))
-                if src_m > time.time():   # base mtime in the future (clock skew): pin the
-                    os.utime(fp, (src_m, src_m))   # clone to it, or every run re-renders
-                refreshed += 1
-    return (0, refreshed)
+def _alerts_path(session_id, queue_dir=None) -> str:
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id if isinstance(session_id, str) else "")[:80]
+    return os.path.join(queue_dir or _hook_queue_dir(), f"a-{sid or 'nosession'}.jsonl")
+
+
+def _name_check(event, aid, expected):
+    """The alert text when the subagent's meta.json does not carry `expected`,
+    else None. It is the detector for CC ceasing to honor `name` (and for a
+    Start paired with the wrong dispatch)."""
+    mp = _meta_path(event, aid)
+    if not mp or not os.path.isfile(mp):
+        return (f"named-subagents: cannot verify {expected}'s name — its meta.json is "
+                f"missing ({mp or 'no transcript path in the SubagentStop event'}). "
+                f"Claude Code may have changed how it records subagents.")
+    got = _read_json(mp, {}).get("name")
+    if not isinstance(got, str) or not got:
+        return (f"named-subagents: {expected} was dispatched with `name` but Claude Code "
+                f"did not record it — the task tree likely showed the agent type instead. "
+                f"`name` may no longer be honored; the label still carries the name.")
+    if got != expected:
+        return (f"named-subagents: identity mix-up — the agent shown as {got} was told it "
+                f"is {expected}. Its [Name] report line will not match the tree.")
+    return None
+
+
+def _name_stop(event, queue_dir=None):
+    """SubagentStop: release the agent's name by agent_id (a Stop for an agent that
+    is not live — unknown, or already released — is a no-op), then check its
+    meta.json. A failed check is RECORDED, not emitted: CC 2.1.283 drops a
+    SubagentStop systemMessage (it renders one from PreToolUse/PostToolUse/Stop),
+    so the main agent's Stop hook shows it (_name_main_stop). Always returns None
+    (a SubagentStop `decision` could block the stop)."""
+    if not isinstance(event, dict):
+        return None
+    aid = event.get("agent_id")
+    if not isinstance(aid, str) or not aid:
+        return None
+    sid = event.get("session_id")
+    qpath, bpath = _queue_path(sid, queue_dir), _bindings_path(sid, queue_dir)
+    if not os.path.exists(bpath):
+        return None
+    with _queue_lock(qpath):
+        bindings = _read_bindings(bpath)
+        rec = bindings.get(aid)
+        if not rec or not rec.get("live"):
+            return None
+        rec.update(live=False, ts=time.time())
+        _write_json_atomic(bpath, {"agents": bindings})
+        alert = _name_check(event, aid, rec.get("name"))
+        if alert:
+            with open(_alerts_path(sid, queue_dir), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"msg": alert, "ts": time.time()}, ensure_ascii=False) + "\n")
+    return None
+
+
+def _name_main_stop(event, queue_dir=None):
+    """Main-agent Stop: show this session's recorded alerts to the owner as one
+    `systemMessage`, then clear them. Each broken dispatch alerts once, so a CC
+    change that breaks `name` alerts on every dispatch from then on."""
+    sid = event.get("session_id")
+    apath = _alerts_path(sid, queue_dir)
+    if not os.path.exists(apath):
+        return None
+    qpath = _queue_path(sid, queue_dir)
+    with _queue_lock(qpath):
+        try:
+            with open(apath, "r", encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+            os.unlink(apath)
+        except OSError:
+            return None
+    msgs = []
+    for line in lines:
+        try:
+            m = json.loads(line).get("msg")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(m, str) and m and m not in msgs:
+            msgs.append(m)
+    return {"systemMessage": "\n".join(msgs)} if msgs else None
+
+
+def _hook_name(event, queue_dir=None, ledger_path=None):
+    """`hook run --name`: route one hook event to its name-mode handler. Returns
+    the full hook output object (or None)."""
+    if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE") or not isinstance(event, dict):
+        return None
+    ev = event.get("hook_event_name")
+    if ev == "SubagentStart":
+        return _name_start(event, queue_dir)
+    if ev == "SubagentStop":
+        return _name_stop(event, queue_dir)
+    if ev == "Stop":
+        return _name_main_stop(event, queue_dir)
+    return _name_pre(event, queue_dir, ledger_path)
+
+
+def _roster_leftovers(adir=None):
+    """(agents_dir, [paths]) of 0.5/0.6 roster agent files still on disk: every
+    manifest-listed file carrying the roster marker, else (no manifest) every
+    *.md in the agents dir that carries it. Never returns a file we didn't write."""
+    ros = _load_roster()
+    adir = adir or (ros or {}).get("dir") or os.path.join(os.path.expanduser("~"), ".claude", "agents")
+    if ros and adir == ros.get("dir"):
+        cands = [os.path.join(adir, rel) for rel in sorted((ros.get("files") or {}).values())]
+    elif os.path.isdir(adir):
+        cands = [os.path.join(adir, f) for f in sorted(os.listdir(adir)) if f.endswith(".md")]
+    else:
+        cands = []
+    found = []
+    for p in cands:
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                if _ROSTER_MARKER in fh.read(8192):
+                    found.append(p)
+        except OSError:
+            continue
+    return adir, found
 
 
 def cmd_roster(args):
+    """Roster mode was removed in 0.7.0 (name mode replaces it). What remains is
+    the migration: `status` lists leftover roster files, `uninstall` deletes them
+    and the manifest, and `ensure` is a silent no-op so a stale SessionStart
+    registration can never fail a session start."""
     action = args.roster_cmd
     rpath = getattr(args, "state", None) or _roster_state_path()
+    if getattr(args, "state", None):
+        os.environ["NAMED_SUBAGENTS_ROSTER"] = rpath
     if action == "ensure":
-        # Runs from a SessionStart hook, whose stdout lands in the model's context:
-        # --quiet prints nothing and never fails the session start.
-        quiet = getattr(args, "quiet", False)
-        try:
-            installed, refreshed = _roster_ensure(rpath, getattr(args, "dir", None))
-            if installed and quiet and not sys.stdin.isatty():
-                # Agent definitions load at session start, so THIS session can't see
-                # the callsigns we just wrote; retyping to one would fail the dispatch.
-                ev = json.loads(sys.stdin.read() or "{}")
-                sid = ev.get("session_id") if isinstance(ev, dict) else None
-                if isinstance(sid, str) and sid:
-                    _roster_mark_unloaded(sid)
-        except Exception as e:  # noqa: BLE001 — a session start must never break
-            if not quiet:
-                print(f"error: {e}", file=sys.stderr)
-            return 0 if quiet else 1
-        if not quiet:
-            print(f"roster ensure: installed {installed}, refreshed {refreshed}")
         return 0
+    adir, files = _roster_leftovers(getattr(args, "dir", None))
     if action == "status":
-        ros = _load_roster(rpath)
-        if not ros:
-            print(f"no roster installed (manifest: {rpath})")
+        if not files:
+            print(f"no roster agent files in {adir} — nothing to migrate")
             return 0
-        adir = ros.get("dir") or "?"
-        print(f"manifest:  {rpath}\nagents dir: {adir}")
-        missing = 0
-        for base, cats in sorted((ros.get("agents") or {}).items()):
-            names = [n for ns in cats.values() for n in ns]
-            print(f"  {base}: {len(names)} callsigns "
-                  f"({', '.join(sorted(cats))})")
-        for nm, rel in sorted((ros.get("files") or {}).items()):
-            if not os.path.isfile(os.path.join(adir, rel)):
-                print(f"  ⚠ missing file for {nm}: {rel}")
-                missing += 1
-        return 1 if missing else 0
-
-    if action == "uninstall":
-        ros = _load_roster(rpath)
-        if not ros:
-            print(f"no roster installed (manifest: {rpath})")
-            return 0
-        adir = ros.get("dir") or ""
-        removed = 0
-        for nm, rel in sorted((ros.get("files") or {}).items()):
-            p = os.path.join(adir, rel)
-            try:
-                with open(p, "r", encoding="utf-8") as fh:
-                    ours = _ROSTER_MARKER in fh.read()
-            except OSError:
-                continue
-            if ours:                      # never delete a file we didn't generate
-                os.unlink(p)
-                removed += 1
-        try:
-            os.unlink(rpath)
-        except OSError:
-            pass
-        print(f"removed {removed} roster agent file(s) from {adir} and the manifest")
+        print(f"{len(files)} leftover roster agent file(s) in {adir} "
+              f"(roster mode was removed in 0.7.0):")
+        for p in files:
+            print(f"  {os.path.basename(p)}")
+        print("Remove them with `named-subagents roster uninstall` "
+              "(add --dry-run to preview).")
+        return 1
+    # uninstall
+    dry = getattr(args, "dry_run", False)
+    for p in files:
+        if dry:
+            print(f"would remove {p}")
+        else:
+            os.unlink(p)
+    if dry:
+        print(f"dry run: {len(files)} roster agent file(s) in {adir}"
+              + (f"; manifest {rpath}" if os.path.exists(rpath) else ""))
         return 0
-
-    # install
-    reg, _cfg = _reg_cfg(args)
-    bases = list(dict.fromkeys(args.base or ["general-purpose"]))
-    adir = os.path.abspath(os.path.expanduser(
-        args.dir or os.path.join("~", ".claude", "agents")))
-    count = max(1, args.count)
-    if args.categories:
-        cats = [c.strip() for c in args.categories.split(",") if c.strip()]
-        bad = [c for c in cats if c not in reg.categories]
-        if bad:
-            print(f"error: unknown categories: {', '.join(bad)} "
-                  f"(see `named-subagents categories`)", file=sys.stderr)
-            return 1
-    else:
-        cats = [c for c in reg.categories if c != "default"]
-    os.makedirs(adir, exist_ok=True)
-    led = Ledger()                        # ephemeral: cross-base draws never collide
-    manifest = {"version": 1, "dir": adir, "agents": {}, "files": {}}
-    written = []
-    for base in bases:
-        src = _roster_find_base_file(base, adir)
-        base_fm, base_body = (None, None)
-        if src:
-            with open(src, "r", encoding="utf-8") as fh:
-                base_fm, base_body = _agent_md_split(fh.read())
-        per_base = {}
-        drawn = 0
-        for i in range(count):            # round-robin across categories
-            c = cats[i % len(cats)]
-            try:
-                nm = _strip_gen(allocate(c, 1, reg, ledger=led)[0])
-            except PoolExhaustedError:
-                continue
-            fp = os.path.join(adir, f"{nm}.md")
-            if os.path.exists(fp) and not args.force:
-                try:
-                    with open(fp, "r", encoding="utf-8") as fh:
-                        ours = _ROSTER_MARKER in fh.read()
-                except OSError:
-                    ours = False
-                if not ours:
-                    print(f"  skip {nm}: {fp} exists and is not a roster file "
-                          f"(--force to overwrite)")
-                    continue
-            with open(fp, "w", encoding="utf-8") as fh:
-                fh.write(_roster_agent_md(nm, base, c, reg, base_fm, base_body))
-            per_base.setdefault(c, []).append(nm)
-            manifest["files"][nm] = f"{nm}.md"
-            written.append(nm)
-            drawn += 1
-        manifest["agents"][base] = per_base
-        origin = f"cloned from {src}" if src else "generic body (built-in base)"
-        print(f"{base}: {drawn} callsign(s) [{origin}]")
-    _save_roster(manifest, rpath)
-    print(f"\nwrote {len(written)} agent file(s) to {adir}\nmanifest: {rpath}\n"
-          f"Next: `named-subagents hook install --roster`, then start a NEW Claude\n"
-          f"Code session (agent definitions load at session start). Fan-outs will\n"
-          f"show callsigns in the live task tree instead of the base agent type.\n"
-          f"Note: each roster agent adds one line to the model's agent list — keep\n"
-          f"the roster small (default 8/base).")
+    try:
+        os.unlink(rpath)
+    except OSError:
+        pass
+    print(f"removed {len(files)} roster agent file(s) from {adir} and the manifest. "
+          f"Start a new Claude Code session so its agent list drops them.")
     return 0
 
 
@@ -1308,22 +1308,29 @@ def cmd_hook_run(args=None, argv=None):
     so the dispatch proceeds unchanged. A broken namer must never break a fan-out,
     and it must never exit 2 (that would BLOCK the dispatch)."""
     try:
-        capture = ("--capture" in (argv or [])) or bool(getattr(args, "capture", False))
-        retype = ("--retype" in (argv or [])) or bool(getattr(args, "retype", False))
+        flags = set(argv or [])
+        capture = "--capture" in flags or bool(getattr(args, "capture", False))
+        # --retype/--release are the 0.5/0.6 roster registrations; they now run
+        # name mode, so a lingering settings.json install keeps naming.
+        name_mode = bool(flags & {"--name", "--retype", "--release"}) or any(
+            bool(getattr(args, f, False)) for f in ("name", "retype", "release"))
         event = json.loads(sys.stdin.read())
         ev = event.get("hook_event_name") if isinstance(event, dict) else None
         if ("--plugin" in (argv or []) and not os.environ.get("NAMED_SUBAGENTS_PLUGIN_FORCE")
                 and _settings_hooks_present(
                     event.get("cwd") if isinstance(event, dict) else None)):
             return 0                      # a settings.json install already handles it
+        if name_mode:
+            top = _hook_name(event)
+            if top is not None:
+                sys.stdout.write(json.dumps(top, ensure_ascii=False))
+            return 0
         if capture:
             out = _hook_pre_capture(event)
         elif ev == "SubagentStop":
-            out = _hook_subagent_stop(event)
+            out = None                    # only name mode acts on SubagentStop
         elif ev == "SubagentStart":
             out = _hook_subagent_start(event)
-        elif retype:
-            out = _hook_retype(event)
         else:
             out = _hook_mutate(event)
         if out is not None:
@@ -1353,15 +1360,10 @@ def _hook_command(capture: bool = False) -> str:
     return f'"{sys.executable}" -m named_subagents hook run{cap} --managed-by {_HOOK_MARKER}'
 
 
-def _hook_command_retype() -> str:
-    """The roster-mode registration (v0.5.0): a single PreToolUse entry whose
-    updatedInput rewrites `subagent_type` to a roster callsign."""
-    return f'"{sys.executable}" -m named_subagents hook run --retype --managed-by {_HOOK_MARKER}'
-
-
-def _hook_command_release() -> str:
-    """The roster-mode SubagentStop registration: frees a finished callsign."""
-    return f'"{sys.executable}" -m named_subagents hook run --release --managed-by {_HOOK_MARKER}'
+def _hook_command_name() -> str:
+    """The name-mode registration (v0.7.0): the same command on PreToolUse,
+    SubagentStart and SubagentStop; `hook run --name` routes by event."""
+    return f'"{sys.executable}" -m named_subagents hook run --name --managed-by {_HOOK_MARKER}'
 
 
 def _read_settings(sp):
@@ -1418,16 +1420,11 @@ def _is_capture_hook(h) -> bool:
     return _HOOK_MARKER in cmd and "--capture" in cmd
 
 
-def _is_retype_hook(h) -> bool:
-    """True for the v0.5.0 roster-mode PreToolUse registration (ours + --retype)."""
+def _is_name_hook(h) -> bool:
+    """True for a name-mode registration (ours + --name), or a 0.5/0.6 roster one
+    (--retype/--release), which `hook run` now also routes to name mode."""
     cmd = h.get("command") or "" if isinstance(h, dict) else ""
-    return _HOOK_MARKER in cmd and "--retype" in cmd
-
-
-def _is_release_hook(h) -> bool:
-    """True for the roster-mode SubagentStop registration (ours + --release)."""
-    cmd = h.get("command") or "" if isinstance(h, dict) else ""
-    return _HOOK_MARKER in cmd and "--release" in cmd
+    return _HOOK_MARKER in cmd and any(f in cmd for f in ("--name", "--retype", "--release"))
 
 
 def _prune_our_hooks(entries, only=None):
@@ -1459,10 +1456,11 @@ def _prune_our_hooks(entries, only=None):
     return new, removed
 
 
-def _hook_install_roster(args):
-    """Register roster mode: ONE PreToolUse retype entry. Prunes our SubagentStart
-    + capture + legacy entries — roster mode replaces them (persona now travels in
-    the roster agent definition, so an SS namer would double-name)."""
+def _hook_install_name(args):
+    """Register name mode: one `hook run --name` entry each on PreToolUse
+    (Agent|Task), SubagentStart and SubagentStop. Prunes every other entry of ours
+    (auto-namer, capture, 0.5/0.6 retype/release) — name mode injects the identity
+    itself, so a second SubagentStart namer would double-name."""
     sp = _settings_path(args)
     data, err = _read_settings(sp)
     if err:
@@ -1473,56 +1471,39 @@ def _hook_install_roster(args):
     if not isinstance(hooks, dict):
         print(f"error: {sp} has a non-object 'hooks'; refusing to modify.", file=sys.stderr)
         return 1
+    for ev in _NAME_EVENTS:
+        if not isinstance(hooks.setdefault(ev, []), list):
+            print(f"error: {sp} has a non-list 'hooks.{ev}'; refusing to modify.",
+                  file=sys.stderr)
+            return 1
     existed = os.path.exists(sp)
+    cmd = _hook_command_name()
     removed = 0
-    for ev in ("SubagentStart", "PreToolUse"):
-        new_list, n = _prune_our_hooks(hooks.get(ev), only=lambda h: not _is_retype_hook(h))
-        if n:
-            hooks[ev] = new_list
-            removed += n
-    pre = hooks.setdefault("PreToolUse", [])
-    if not isinstance(pre, list):
-        print(f"error: {sp} has a non-list 'hooks.PreToolUse'; refusing to modify.",
-              file=sys.stderr)
-        return 1
-    cmd = _hook_command_retype()
-    refreshed = False
-    for _m, h in _iter_our_hooks(pre):
-        h["command"] = cmd
-        refreshed = True
-        break
-    if not refreshed:
-        pre.append({"matcher": "Agent|Task",
-                    "hooks": [{"type": "command", "command": cmd}]})
-    stop = hooks.setdefault("SubagentStop", [])
-    if not isinstance(stop, list):
-        print(f"error: {sp} has a non-list 'hooks.SubagentStop'; refusing to modify.",
-              file=sys.stderr)
-        return 1
-    rcmd = _hook_command_release()
-    for _m, h in _iter_our_hooks(stop):
-        h["command"] = rcmd
-        break
-    else:
-        stop.append({"hooks": [{"type": "command", "command": rcmd}]})
+    for ev in _NAME_EVENTS:
+        new_list, n = _prune_our_hooks(hooks[ev])
+        hooks[ev] = new_list
+        removed += n
+        block = {"hooks": [{"type": "command", "command": cmd}]}
+        if ev == "PreToolUse":
+            block = {"matcher": "Agent|Task", **block}
+        hooks[ev].append(block)
     _write_settings(sp, data, backup=existed)
-    mig = f"\n  replaced {removed} auto-namer entr{'y' if removed == 1 else 'ies'} (roster mode supersedes them)" if removed else ""
-    ros = _load_roster()
-    ros_line = ("" if ros else
-                "\n  ⚠ no roster installed yet — run `named-subagents roster install` "
-                "(until then, dispatches fall back to description+prompt naming)")
-    print(f"installed the roster retype hook in {sp}\n"
-          f"  event: PreToolUse   matcher: Agent|Task\n  command: {cmd}\n"
-          f"  event: SubagentStop (frees a finished agent's callsign)\n"
-          f"  command: {rcmd}{mig}{ros_line}\n"
-          f"New Claude Code sessions will dispatch fan-outs under roster callsigns —\n"
-          f"visible in the live task tree. Verify with `named-subagents hook status`.")
+    mig = (f"\n  replaced {removed} earlier entr{'y' if removed == 1 else 'ies'} of ours"
+           if removed else "")
+    _adir, left = _roster_leftovers()
+    left_line = (f"\n  ⚠ {len(left)} roster agent file(s) from 0.5/0.6 remain — remove them "
+                 f"with `named-subagents roster uninstall`" if left else "")
+    print(f"installed name mode in {sp}\n"
+          f"  events: PreToolUse (Agent|Task), SubagentStart, SubagentStop, Stop\n"
+          f"  command: {cmd}{mig}{left_line}\n"
+          f"New Claude Code sessions will show each subagent's name in the live task tree.\n"
+          f"Verify with `named-subagents hook status`.")
     return 0
 
 
 def cmd_hook_install(args):
-    if getattr(args, "roster", False):
-        return _hook_install_roster(args)
+    if getattr(args, "name", False) or getattr(args, "roster", False):
+        return _hook_install_name(args)
     sp = _settings_path(args)
     data, err = _read_settings(sp)
     if err:
@@ -1553,9 +1534,10 @@ def cmd_hook_install(args):
     if pre_removed:
         hooks["PreToolUse"] = pre = pre_new
     # Switching back from roster mode: its SubagentStop release entry has no job here.
-    stop_new, stop_removed = _prune_our_hooks(hooks.get("SubagentStop"))
-    if stop_removed:
-        hooks["SubagentStop"] = stop_new
+    for ev in ("SubagentStop", "Stop"):    # name mode's release + alert entries
+        ev_new, ev_removed = _prune_our_hooks(hooks.get(ev))
+        if ev_removed:
+            hooks[ev] = ev_new
     migrated = " (migrated the legacy PreToolUse entry)" if pre_removed else ""
     refreshed = False
     for _m, h in _iter_our_hooks(ss):
@@ -1599,7 +1581,7 @@ def cmd_hook_uninstall(args):
         return 0
     # Remove our entries from every event we register on.
     total = 0
-    for ev in ("SubagentStart", "PreToolUse", "SubagentStop"):
+    for ev in ("SubagentStart", "PreToolUse", "SubagentStop", "Stop"):
         new_list, removed = _prune_our_hooks(hooks.get(ev))
         if removed:
             hooks[ev] = new_list
@@ -1615,23 +1597,23 @@ def cmd_hook_uninstall(args):
 def cmd_hook_status(args):
     sp = _settings_path(args)
     data, err = _read_settings(sp)
-    installed, cmd, legacy, capture, retype = False, None, False, False, False
+    installed, cmd, legacy, capture = False, None, False, False
     _hk = data.get("hooks") or {}
+    name_events = [ev for ev in _NAME_EVENTS
+                   if any(_is_name_hook(h) for _m, h in _iter_our_hooks(_hk.get(ev) or []))]
+    name_mode = "PreToolUse" in name_events
     for _m, h in _iter_our_hooks(_hk.get("SubagentStart") or []):
-        installed, cmd = True, h.get("command")
-    release = any(_is_release_hook(h) for _m, h in _iter_our_hooks(_hk.get("SubagentStop") or []))
+        if not _is_name_hook(h):
+            installed, cmd = True, h.get("command")
     for _m, h in _iter_our_hooks(_hk.get("PreToolUse") or []):
         if _is_capture_hook(h):
             capture = True                  # the v0.4.3 task-capture entry
-            continue
-        if _is_retype_hook(h):
-            retype = True                   # the v0.5.0 roster-mode entry
+        elif _is_name_hook(h):
+            cmd = h.get("command")          # name mode (or a 0.5/0.6 retype entry)
+        else:
+            legacy = True                   # a pre-0.4.2 (clobber-prone) registration lingers
             if not installed:
                 cmd = h.get("command")
-            continue
-        legacy = True                       # a pre-0.4.2 (clobber-prone) registration lingers
-        if not installed:
-            cmd = h.get("command")
     lp = _hook_ledger_path()
     led_exists = os.path.exists(lp)
     allocated = None
@@ -1642,35 +1624,32 @@ def cmd_hook_status(args):
         except Exception:  # noqa: BLE001 — status must never crash
             allocated = None
     disabled = bool(os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"))
+    _adir, leftovers = _roster_leftovers()
     if getattr(args, "json", False):
         print(json.dumps({
             "settings_path": sp, "settings_malformed": bool(err),
             "installed": installed, "command": cmd, "ledger_path": lp,
             "ledger_exists": led_exists, "total_allocated": allocated,
             "disabled": disabled, "legacy_pretooluse": legacy,
-            "capture_installed": capture, "retype_installed": retype,
-            "release_installed": release,
-            "roster_path": _roster_state_path(),
-            "roster_installed": bool(_load_roster()),
+            "capture_installed": capture, "name_installed": name_mode,
+            "name_events": name_events, "roster_leftover_files": len(leftovers),
         }, ensure_ascii=False, indent=2))
         return 0
     print(f"settings:   {sp}" + ("  ⚠ MALFORMED JSON" if err else ""))
-    if retype:
-        mode = "yes  (roster mode — PreToolUse retype: callsigns in the live task tree)"
+    if name_mode:
+        mode = "yes  (name mode — names in the live task tree)"
     elif installed:
         mode = "yes  (event: SubagentStart)"
     else:
         mode = "no"
     print(f"installed:  {mode}")
-    if retype:
-        ros = _load_roster()
-        print(f"  roster:   {_roster_state_path()}  "
-              f"({'installed' if ros else '⚠ NOT installed — run `named-subagents roster install`'})")
-        print("  release:  " + ("yes  (SubagentStop frees finished callsigns)" if release else
-              "⚠ no — callsigns are never freed within a session; re-run `hook install --roster`"))
-        if installed or capture:
-            print("  ⚠ mixed:  auto-namer entries are also present — "
-                  "re-run `hook install --roster` to prune them")
+    if name_mode and len(name_events) < len(_NAME_EVENTS):
+        print(f"  ⚠ partial: name mode is registered only on {', '.join(name_events)} "
+              f"(identity, release and alerts need all {len(_NAME_EVENTS)}) — "
+              f"re-run `hook install --name`")
+    if name_mode and (installed or capture):
+        print("  ⚠ mixed:  auto-namer entries are also present — "
+              "re-run `hook install --name` to prune them")
     if cmd:
         print(f"  command:  {cmd}")
     if installed:
@@ -1678,6 +1657,9 @@ def cmd_hook_status(args):
     if legacy:
         print("  ⚠ legacy:  a pre-0.4.2 PreToolUse entry is still present (clobber-prone);"
               " re-run `hook install` to migrate it, or `hook uninstall` to clear it")
+    if leftovers:
+        print(f"  ⚠ roster: {len(leftovers)} agent file(s) from 0.5/0.6 remain in {_adir} "
+              f"— `named-subagents roster uninstall` removes them")
     print(f"ledger:     {lp}  ({'exists' if led_exists else 'not created yet'}"
           + (f", {allocated} names allocated" if allocated is not None else "") + ")")
     if disabled:
@@ -1803,6 +1785,7 @@ def build_parser() -> argparse.ArgumentParser:
     # (a real CLI arg, robust to shell-vs-exec, unlike a `# comment`).
     hr.add_argument("--managed-by", help=argparse.SUPPRESS, default=None)
     hr.add_argument("--capture", action="store_true", help=argparse.SUPPRESS)
+    hr.add_argument("--name", action="store_true", help=argparse.SUPPRESS)
     hr.add_argument("--retype", action="store_true", help=argparse.SUPPRESS)
     hr.add_argument("--release", action="store_true", help=argparse.SUPPRESS)
     hr.set_defaults(func=cmd_hook_run)
@@ -1815,9 +1798,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     hi = hsub.add_parser("install", help="register the hook in Claude Code settings.json")
     _hook_target_flags(hi)
-    hi.add_argument("--roster", action="store_true",
-                    help="roster mode: rewrite subagent_type to a roster callsign so the "
-                         "live task tree shows the NAME (requires `roster install`)")
+    hi.add_argument("--name", action="store_true",
+                    help="name mode: set each dispatch's `name` so the live task tree "
+                         "shows it (PreToolUse + SubagentStart + SubagentStop)")
+    hi.add_argument("--roster", action="store_true", help=argparse.SUPPRESS)  # 0.5/0.6 alias
     hi.set_defaults(func=cmd_hook_install)
 
     hu = hsub.add_parser("uninstall", help="remove the hook from settings.json")
@@ -1830,36 +1814,20 @@ def build_parser() -> argparse.ArgumentParser:
     hstat.set_defaults(func=cmd_hook_status)
 
     ro = sub.add_parser("roster",
-                        help="visible names: generate persona agent definitions so the "
-                             "live task tree shows callsigns instead of the agent type")
+                        help="migration: find/remove agent files left by the 0.5/0.6 "
+                             "roster mode (removed in 0.7.0)")
     rsub = ro.add_subparsers(dest="roster_cmd", required=True)
-    ri = rsub.add_parser("install", help="generate roster agent files + manifest")
-    ri.add_argument("--base", action="append",
-                    help="base agent type to roster (repeatable; default: general-purpose). "
-                         "A custom base's .md is cloned (tools/model/body preserved); "
-                         "built-in bases get a generic body")
-    ri.add_argument("--dir", help="agents directory to write into (default: ~/.claude/agents)")
-    ri.add_argument("--count", type=int, default=8,
-                    help="callsigns per base (default 8; each adds a line to the model's agent list)")
-    ri.add_argument("--categories",
-                    help="comma-separated registry categories to draw from "
-                         "(default: all except 'default', round-robin)")
-    ri.add_argument("--force", action="store_true",
-                    help="overwrite existing non-roster files with the same name")
-    ri.add_argument("--state", help=argparse.SUPPRESS)   # manifest path override (tests)
-    add_common_flags(ri)
-    ri.set_defaults(func=cmd_roster)
-    re_ = rsub.add_parser("ensure", help="install the default crew if missing; re-render "
-                          "callsign files that are missing or older than their base agent")
-    re_.add_argument("--quiet", action="store_true",
-                     help="print nothing and always exit 0 (for a SessionStart hook)")
-    re_.add_argument("--dir", help=argparse.SUPPRESS)
-    re_.add_argument("--state", help=argparse.SUPPRESS)
-    re_.set_defaults(func=cmd_roster)
-    for name_, hlp in (("status", "show the installed roster + file integrity"),
-                       ("uninstall", "delete generated roster files + the manifest")):
+    for name_, hlp in (("status", "list leftover roster agent files (exit 1 if any)"),
+                       ("uninstall", "delete leftover roster agent files + the manifest"),
+                       ("ensure", argparse.SUPPRESS)):
         rs = rsub.add_parser(name_, help=hlp)
+        rs.add_argument("--dir", help="agents directory to scan (default: the manifest's, "
+                                      "else ~/.claude/agents)")
         rs.add_argument("--state", help=argparse.SUPPRESS)
+        rs.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
+        if name_ == "uninstall":
+            rs.add_argument("--dry-run", dest="dry_run", action="store_true",
+                            help="list what would be removed, remove nothing")
         rs.set_defaults(func=cmd_roster)
 
     return p

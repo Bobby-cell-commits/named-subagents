@@ -24,6 +24,10 @@ jobs:
         run: python tests/test_named_subagents.py
       - name: Auto-namer hook tests
         run: python tests/test_hook.py
+      - name: Name-mode + migration tests
+        run: |
+          python tests/test_name_mode.py
+          python tests/test_roster.py
       - name: Resolution accuracy eval
         run: python tests/eval_resolution.py
       - name: Demo smoke
@@ -58,6 +62,10 @@ jobs:
         run: node js/test_named_subagents.mjs
       - name: Auto-namer hook tests
         run: node js/test_hook.mjs
+      - name: Name-mode + migration tests (JS port, driven by the Python harness)
+        run: |
+          NAMED_SUBAGENTS_TEST_PORT=js python3 tests/test_name_mode.py
+          NAMED_SUBAGENTS_TEST_PORT=js python3 tests/test_roster.py
       - name: Demo smoke
         run: node js/demo.mjs > /dev/null
       - name: Pack smoke (prepack copies canonical registry)
