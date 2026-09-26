@@ -297,6 +297,67 @@ with tempfile.TemporaryDirectory() as td:
           not any(MARKER in (h.get("command") or "")
                   for m in data["hooks"].get("SubagentStop", []) for h in m.get("hooks", [])))
 
+    section("roster ensure — what the plugin runs at SessionStart")
+    ens_state = os.path.join(td, "ens.json")
+    ens_dir = os.path.join(td, "ens-agents")
+    ens_env = dict(ENV, NAMED_SUBAGENTS_ROSTER=ens_state)
+    r = subprocess.run([PY, "-m", "named_subagents", "roster", "ensure", "--quiet",
+                        "--dir", ens_dir], cwd=ROOT, capture_output=True, text=True,
+                       input=json.dumps({"hook_event_name": "SessionStart",
+                                         "session_id": "fresh"}),
+                       env=dict(os.environ, **ens_env))
+    check("ensure --quiet: exit 0, prints nothing (stdout would enter context)",
+          r.returncode == 0 and not r.stdout.strip(), r.stdout + r.stderr)
+    ens = json.load(open(ens_state, encoding="utf-8"))
+    check("ensure installs the default crew when none exists",
+          len(ens.get("files") or {}) == 8, str(ens.get("files")))
+    rc, out = hook_run_retype(dispatch_event(session="fresh"), ens_env)
+    ui = (out or {}).get("updatedInput") or {}
+    check("the installing session is NOT retyped (its agent list predates the files)",
+          ui.get("subagent_type") == "general-purpose" and SIG in (ui.get("prompt") or ""),
+          str(out))
+    rc, out = hook_run_retype(dispatch_event(session="later"), ens_env)
+    ui = (out or {}).get("updatedInput") or {}
+    check("a later session is retyped to a callsign",
+          ui.get("subagent_type") in (ens.get("files") or {}), str(out))
+
+    # drift: editing the base agent must reach its callsigns
+    rs_state = os.path.join(td, "rs.json")
+    rs_env = dict(ENV, NAMED_SUBAGENTS_ROSTER=rs_state)
+    run_cli(["roster", "install", "--dir", AGENTS, "--state", rs_state, "--count", "2",
+             "--base", "research-subagent"])
+    rs = json.load(open(rs_state, encoding="utf-8"))
+    base_md = os.path.join(AGENTS, "research-subagent.md")
+    with open(base_md, "w", encoding="utf-8") as fh:
+        fh.write("---\nname: research-subagent\ndescription: base desc\n"
+                 "tools: Read, Grep, WebFetch\nmodel: sonnet\n---\nEdited body.\n")
+    later = time.time() + 5
+    os.utime(base_md, (later, later))
+    r = run_cli(["roster", "ensure", "--state", rs_state], env_extra=rs_env)
+    check("ensure reports the refresh", "refreshed 2" in r.stdout, r.stdout + r.stderr)
+    clone = open(os.path.join(AGENTS, sorted(rs["files"])[0] + ".md"), encoding="utf-8").read()
+    check("an edited base reaches its clones (tools + body)",
+          "WebFetch" in clone and "Edited body." in clone and ROSTER_MARKER in clone, clone[:200])
+    r = run_cli(["roster", "ensure", "--state", rs_state], env_extra=rs_env)
+    check("ensure is idempotent when nothing changed", "refreshed 0" in r.stdout, r.stdout)
+
+    section("plugin hooks stand down when a settings.json install exists")
+    home = os.path.join(td, "home")
+    os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+    plug_env = dict(ENV, HOME=home)
+    ev = dispatch_event(session="plug")
+    r = run_cli(["hook", "run", "--retype", "--plugin"], env_extra=plug_env,
+                stdin_data=json.dumps(ev))
+    check("plugin retype acts when no settings install exists", '"updatedInput"' in r.stdout,
+          r.stdout)
+    with open(os.path.join(home, ".claude", "settings.json"), "w", encoding="utf-8") as fh:
+        json.dump({"hooks": {"PreToolUse": [{"matcher": "Agent|Task", "hooks": [
+            {"type": "command", "command": f"x hook run --retype --managed-by {MARKER}"}]}]}}, fh)
+    r = run_cli(["hook", "run", "--retype", "--plugin"], env_extra=plug_env,
+                stdin_data=json.dumps(dispatch_event(session="plug2")))
+    check("plugin retype is silent when settings.json already has our hook",
+          r.returncode == 0 and not r.stdout.strip(), r.stdout)
+
     section("roster uninstall")
     r = run_cli(["roster", "uninstall", "--state", STATE])
     check("uninstall exits 0", r.returncode == 0, r.stderr)

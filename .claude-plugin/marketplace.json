@@ -1,0 +1,14 @@
+{
+  "name": "named-subagents",
+  "description": "The named-subagents Claude Code plugin.",
+  "owner": {
+    "name": "Bobby-cell-commits"
+  },
+  "plugins": [
+    {
+      "name": "named-subagents",
+      "source": "./",
+      "description": "Distinct, task-themed names for parallel Claude Code subagents, shown in the live task tree."
+    }
+  ]
+}

@@ -1174,11 +1174,9 @@ function agentMdSplit(text) {
 
 /** Render one roster agent definition file. */
 function rosterAgentMd(name, baseType, category, reg, baseFm, baseBody) {
-  const emoji = reg.emoji(category);
   const theme = reg.theme(category);
-  const desc = `${emoji} Roster callsign of ${baseType} (named-subagents). `
-    + `Prefer dispatching '${baseType}' — the roster hook routes to a free `
-    + "callsign automatically.";
+  // Kept short: every roster file adds this line to each session's agent list.
+  const desc = `Alias of ${baseType}; dispatch '${baseType}' instead.`;
   const fm = ["---", `name: ${name}`, `description: "${desc}"`]
     .concat((baseFm || []).filter((ln) => ln.trim()));
   fm.push("---");

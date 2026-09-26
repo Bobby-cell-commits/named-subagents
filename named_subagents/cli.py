@@ -18,6 +18,8 @@ Examples
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -894,6 +896,19 @@ def _roster_used_path(session_id, queue_dir=None) -> str:
     return os.path.join(queue_dir or _hook_queue_dir(), f"u-{sid}.json")
 
 
+def _roster_unloaded_path(session_id, queue_dir=None) -> str:
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "_", session_id if isinstance(session_id, str) else "")[:80]
+    return os.path.join(queue_dir or _hook_queue_dir(), f"n-{sid or 'nosession'}.json")
+
+
+def _roster_mark_unloaded(session_id, queue_dir=None) -> None:
+    """Record that this session started before its roster files existed."""
+    p = _roster_unloaded_path(session_id, queue_dir)
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"ts": time.time()}, fh)
+
+
 def _roster_prune_used(queue_dir=None) -> None:
     """Best-effort GC of stale per-session used-files (sessions end silently), plus
     their `.lock` sidecars and any other stale queue lock — nothing else deletes
@@ -902,7 +917,7 @@ def _roster_prune_used(queue_dir=None) -> None:
     try:
         now = time.time()
         for fn in os.listdir(qd):
-            if (fn.startswith("u-") and fn.endswith(".json")) or fn.endswith(".lock"):
+            if (fn.startswith(("u-", "n-")) and fn.endswith(".json")) or fn.endswith(".lock"):
                 p = os.path.join(qd, fn)
                 try:
                     if now - os.path.getmtime(p) > _ROSTER_USED_TTL:
@@ -1023,7 +1038,8 @@ def _hook_retype(event, roster=None, queue_dir=None, ledger_path=None):
         return None                       # already retyped (a re-fire), or caller
                                           # dispatched a roster persona directly
     roster_names = sorted((ros or {}).get("files") or {})
-    if not ros or subagent_type not in (ros.get("agents") or {}):
+    if (not ros or subagent_type not in (ros.get("agents") or {})
+            or os.path.exists(_roster_unloaded_path(event.get("session_id"), queue_dir))):
         return _hook_mutate(event, ledger_path,   # unrostered -> legacy visible naming
                             avoid=roster_names or None)
 
@@ -1061,10 +1077,9 @@ def _agent_md_split(text):
 
 def _roster_agent_md(name, base_type, category, reg, base_fm, base_body) -> str:
     """Render one roster agent definition file."""
-    emoji, theme = reg.emoji(category), reg.theme(category)
-    desc = (f"{emoji} Roster callsign of {base_type} (named-subagents). "
-            f"Prefer dispatching '{base_type}' — the roster hook routes to a free "
-            f"callsign automatically.")
+    theme = reg.theme(category)
+    # Kept short: every roster file adds this line to each session's agent list.
+    desc = f"Alias of {base_type}; dispatch '{base_type}' instead."
     fm = ["---", f"name: {name}", f"description: \"{desc}\""]
     fm += [ln for ln in (base_fm or []) if ln.strip()]
     fm.append("---")
@@ -1087,9 +1102,75 @@ def _roster_find_base_file(base_type, agents_dir):
     return None
 
 
+def _roster_ensure(rpath=None, agents_dir=None):
+    """Bring the roster to a usable state without being asked (the plugin runs this
+    at SessionStart). No manifest -> install the default crew. Otherwise re-render
+    any callsign file that is missing, or older than the base agent file it clones,
+    so an edit to e.g. research-subagent.md reaches its callsigns instead of leaving
+    them frozen at install time. Only files carrying the roster marker are touched.
+    Returns a (installed, refreshed) summary."""
+    rpath = rpath or _roster_state_path()
+    ros = _load_roster(rpath)
+    if not ros:
+        argv = ["roster", "install", "--state", rpath]
+        if agents_dir:
+            argv += ["--dir", agents_dir]
+        a = build_parser().parse_args(argv)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_roster(a)
+        ros = _load_roster(rpath)
+        return (len((ros or {}).get("files") or {}), 0)
+    adir = ros.get("dir") or os.path.join(os.path.expanduser("~"), ".claude", "agents")
+    reg, _cfg = _hook_registry()
+    refreshed = 0
+    for base, cats in (ros.get("agents") or {}).items():
+        src = _roster_find_base_file(base, adir)
+        src_m, base_fm, base_body = 0.0, None, None
+        if src:
+            src_m = os.path.getmtime(src)
+            with open(src, "r", encoding="utf-8") as fh:
+                base_fm, base_body = _agent_md_split(fh.read())
+        for c, names in (cats or {}).items():
+            for nm in names if isinstance(names, list) else []:
+                fp = os.path.join(adir, (ros.get("files") or {}).get(nm) or f"{nm}.md")
+                if os.path.exists(fp):
+                    if not (src and src_m > os.path.getmtime(fp)):
+                        continue
+                    with open(fp, "r", encoding="utf-8") as fh:
+                        if _ROSTER_MARKER not in fh.read():
+                            continue      # never overwrite a file we didn't generate
+                cat = c if c in reg.categories else "default"
+                with open(fp, "w", encoding="utf-8") as fh:
+                    fh.write(_roster_agent_md(nm, base, cat, reg, base_fm, base_body))
+                if src_m > time.time():   # base mtime in the future (clock skew): pin the
+                    os.utime(fp, (src_m, src_m))   # clone to it, or every run re-renders
+                refreshed += 1
+    return (0, refreshed)
+
+
 def cmd_roster(args):
     action = args.roster_cmd
     rpath = getattr(args, "state", None) or _roster_state_path()
+    if action == "ensure":
+        # Runs from a SessionStart hook, whose stdout lands in the model's context:
+        # --quiet prints nothing and never fails the session start.
+        quiet = getattr(args, "quiet", False)
+        try:
+            installed, refreshed = _roster_ensure(rpath, getattr(args, "dir", None))
+            if installed and quiet and not sys.stdin.isatty():
+                # Agent definitions load at session start, so THIS session can't see
+                # the callsigns we just wrote; retyping to one would fail the dispatch.
+                ev = json.loads(sys.stdin.read() or "{}")
+                sid = ev.get("session_id") if isinstance(ev, dict) else None
+                if isinstance(sid, str) and sid:
+                    _roster_mark_unloaded(sid)
+        except Exception as e:  # noqa: BLE001 — a session start must never break
+            if not quiet:
+                print(f"error: {e}", file=sys.stderr)
+            return 0 if quiet else 1
+        if not quiet:
+            print(f"roster ensure: installed {installed}, refreshed {refreshed}")
+        return 0
     if action == "status":
         ros = _load_roster(rpath)
         if not ros:
@@ -1195,6 +1276,24 @@ def cmd_roster(args):
     return 0
 
 
+def _settings_hooks_present(cwd=None):
+    """True when a settings.json-registered copy of our hooks (from `hook install`)
+    is active. The plugin's hooks then stand down: both copies would each claim a
+    callsign for the same dispatch, and the loser would stay held."""
+    paths = [os.path.join(os.path.expanduser("~"), ".claude", "settings.json")]
+    if isinstance(cwd, str) and cwd:
+        paths += [os.path.join(cwd, ".claude", n)
+                  for n in ("settings.json", "settings.local.json")]
+    for sp in paths:
+        data, err = _read_settings(sp)
+        if err:
+            continue
+        for ev_hooks in (data.get("hooks") or {}).values():
+            if any(True for _ in _iter_our_hooks(ev_hooks)):
+                return True
+    return False
+
+
 def cmd_hook_run(args=None, argv=None):
     """Auto-namer handler invoked by Claude Code. Reads the event JSON on stdin,
     writes a hookSpecificOutput JSON on stdout, always exits 0.
@@ -1213,6 +1312,10 @@ def cmd_hook_run(args=None, argv=None):
         retype = ("--retype" in (argv or [])) or bool(getattr(args, "retype", False))
         event = json.loads(sys.stdin.read())
         ev = event.get("hook_event_name") if isinstance(event, dict) else None
+        if ("--plugin" in (argv or []) and not os.environ.get("NAMED_SUBAGENTS_PLUGIN_FORCE")
+                and _settings_hooks_present(
+                    event.get("cwd") if isinstance(event, dict) else None)):
+            return 0                      # a settings.json install already handles it
         if capture:
             out = _hook_pre_capture(event)
         elif ev == "SubagentStop":
@@ -1746,6 +1849,13 @@ def build_parser() -> argparse.ArgumentParser:
     ri.add_argument("--state", help=argparse.SUPPRESS)   # manifest path override (tests)
     add_common_flags(ri)
     ri.set_defaults(func=cmd_roster)
+    re_ = rsub.add_parser("ensure", help="install the default crew if missing; re-render "
+                          "callsign files that are missing or older than their base agent")
+    re_.add_argument("--quiet", action="store_true",
+                     help="print nothing and always exit 0 (for a SessionStart hook)")
+    re_.add_argument("--dir", help=argparse.SUPPRESS)
+    re_.add_argument("--state", help=argparse.SUPPRESS)
+    re_.set_defaults(func=cmd_roster)
     for name_, hlp in (("status", "show the installed roster + file integrity"),
                        ("uninstall", "delete generated roster files + the manifest")):
         rs = rsub.add_parser(name_, help=hlp)

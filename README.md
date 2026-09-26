@@ -27,6 +27,51 @@ each one knows **who it's named after**.
 🔍 Bosch      [debugger]  root-cause the flaky test     ← detectives debug
 ```
 
+## Quick start: the Claude Code plugin
+
+```bash
+claude plugin marketplace add Bobby-cell-commits/named-subagents
+claude plugin install named-subagents@named-subagents
+```
+
+Needs `python3` (3.8+) on `PATH`; nothing else to install. Then **start Claude Code
+twice**: the first session writes a crew of 8 callsign agents into
+`~/.claude/agents`, but Claude Code only reads agent definitions at session start,
+so callsigns show from the second session on. (The first session still gets names
+in the task label.) A fan-out then looks like this in the live task tree:
+
+```
+● main
+○ Hudson    🧭 Hudson · map the auth module
+○ Bosch     🔍 Bosch · root-cause the flaky test
+○ Explore   🧭 Magellan · find the billing entry points
+```
+
+What the plugin does, with three hooks:
+
+- **Names every dispatch.** A `general-purpose` dispatch is switched to a free
+  callsign (left column) chosen by the task's theme, and every dispatch, of any
+  type, gets `Name · task` as its label (right column). Built-in types such as
+  `Explore` can't be cloned faithfully, so they get the label only.
+- **Frees names when agents finish** (`SubagentStop`), so a long session never
+  runs out of callsigns.
+- **Keeps the crew current** (`SessionStart`): if you edit an agent a crew was
+  cloned from (e.g. your own `research-subagent.md`), its callsigns are
+  re-rendered at the next session start.
+
+If a callsign isn't loaded, Claude Code runs the dispatch as the original type,
+so a stale or missing crew degrades to label-only naming, never a failed
+dispatch. To give one of your own agents a crew, use the CLI
+(`pip install named-subagents`):
+`named-subagents roster install --base general-purpose --base <your-agent>`.
+
+Already installed the hooks with `named-subagents hook install`? Run
+`named-subagents hook uninstall` first. While that install is present the
+plugin's hooks stand down, so the two never both name one dispatch
+(`NAMED_SUBAGENTS_PLUGIN_FORCE=1` overrides).
+
+The rest of this README covers the library and CLI underneath the plugin.
+
 ## The idea in one line
 
 A subagent has two names: its **role** (what it *is* — `Explore`, `worker`, …,

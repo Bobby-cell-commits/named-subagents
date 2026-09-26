@@ -24,6 +24,29 @@ namer even with the whole crew idle.
 
 Re-run `named-subagents hook install --roster` to pick up the release hook.
 
+### Added
+- **Claude Code plugin** (`.claude-plugin/`, `hooks/hooks.json`, `hooks/run.py`):
+  `claude plugin marketplace add Bobby-cell-commits/named-subagents` +
+  `claude plugin install named-subagents@named-subagents`. Needs only `python3`.
+  Three hooks: SessionStart `roster ensure --quiet`, PreToolUse retype,
+  SubagentStop release. Verified headless on CC 2.1.283 (retype took,
+  `agentType=<callsign>`; both names released). The plugin hooks stand down while
+  a settings.json install of ours is present (`NAMED_SUBAGENTS_PLUGIN_FORCE=1`
+  overrides), so two copies never both claim a callsign for one dispatch.
+- **`roster ensure`**: installs the default crew when none exists, and re-renders
+  callsign files that are missing or older than their base agent file, so edits
+  to a cloned agent (tools, body) reach its callsigns. The session that installs
+  the crew is marked so its dispatches are not retyped (its agent list predates
+  the files) and get label naming instead.
+
+### Changed
+- Every naming path writes the name into the task label: `<emoji> Name · task`
+  (was `<emoji> Name: task` for the fallback, and emoji-only for roster hits).
+  The label is what completion notices quote, and the only name a
+  non-rostered type (`Explore`, …) can show.
+- Roster agent descriptions shortened to `Alias of <base>; dispatch '<base>'
+  instead.` Each one is loaded into every session's agent list.
+
 ## [0.5.0] — 2026-08-26
 
 **Roster mode: callsigns in the LIVE TASK TREE.** The tree label is the
