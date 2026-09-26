@@ -30,6 +30,9 @@ import time
 import named_subagents as ns
 from named_subagents import (
     Ledger,
+    _lock_nb,
+    _replace,
+    _unlock,
     LEDGER_VERSION,
     __version__,
     allocate,
@@ -655,15 +658,11 @@ class _queue_lock:
         self._fd = None
 
     def __enter__(self):
-        try:
-            import fcntl
-        except ImportError:
-            return self
         deadline = time.monotonic() + self._timeout
         self._fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         while True:
             try:
-                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_nb(self._fd)
                 # Refresh the mtime: _prune_state deletes locks by age, and a lock
                 # file in use must never look stale (deleting it while held would
                 # let the next process lock a fresh file and break exclusion).
@@ -671,11 +670,17 @@ class _queue_lock:
                 return self
             except OSError:
                 if time.monotonic() > deadline:
+                    os.close(self._fd)
+                    self._fd = None
                     raise TimeoutError("queue lock timeout")
                 time.sleep(0.005)
 
     def __exit__(self, *exc):
         if self._fd is not None:
+            try:
+                _unlock(self._fd)       # closing releases it too; explicit for Windows
+            except OSError:  # noqa: BLE001 — the close below still releases the lock
+                pass
             os.close(self._fd)
             self._fd = None
         return False
@@ -922,7 +927,7 @@ def _write_json_atomic(path, data) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -961,7 +966,7 @@ def _write_queue(qpath, entries) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         for e in entries:
             fh.write(json.dumps(e, ensure_ascii=False) + "\n")
-    os.replace(tmp, qpath)
+    _replace(tmp, qpath)
 
 
 def _read_bindings(bpath):
@@ -1484,7 +1489,8 @@ def cmd_hook_run(args=None, argv=None):
         # name mode, so a lingering settings.json install keeps naming.
         name_mode = bool(flags & {"--name", "--retype", "--release"}) or any(
             bool(getattr(args, f, False)) for f in ("name", "retype", "release"))
-        event = json.loads(sys.stdin.read())
+        # Claude Code sends UTF-8; Windows would decode stdin as cp1252 by default.
+        event = json.loads(sys.stdin.buffer.read().decode("utf-8"))
         ev = event.get("hook_event_name") if isinstance(event, dict) else None
         if ("--plugin" in (argv or []) and not os.environ.get("NAMED_SUBAGENTS_PLUGIN_FORCE")
                 and _settings_hooks_present(
@@ -1493,7 +1499,8 @@ def cmd_hook_run(args=None, argv=None):
         if name_mode or ev == "Stop":     # the main Stop shows alerts in either mode
             top = _hook_name(event)
             if top is not None:
-                sys.stdout.write(json.dumps(top, ensure_ascii=False))
+                sys.stdout.write(json.dumps(top))   # ASCII escapes: no stdout encoding
+                                                    # (cp1252 on Windows) can fail it
             return 0
         if capture:
             out = _hook_pre_capture(event)
@@ -1504,7 +1511,7 @@ def cmd_hook_run(args=None, argv=None):
         else:
             out = _hook_mutate(event)
         if out is not None:
-            sys.stdout.write(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
+            sys.stdout.write(json.dumps({"hookSpecificOutput": out}))
         if ev == "SubagentStart" and not os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
             try:                          # optional notice: never costs the agent its name
                 _prune_state()
@@ -2057,12 +2064,30 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _utf8_stdio() -> None:
+    """Make CLI output survive a non-UTF-8 console or pipe (cp1252 on Windows),
+    which cannot encode the emoji and symbols the CLI prints. A pipe gets UTF-8;
+    a console keeps its encoding and replaces what it cannot show."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if enc == "utf8" or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8")
+        except (OSError, ValueError):  # noqa: BLE001 — a wrapped stream keeps its setup
+            pass
+
+
 def main(argv=None):
     # FAIL-OPEN fast path: `hook run` must NEVER exit non-zero on ANY argv — argparse
     # is strict and sys.exit(2)s on an unexpected token, and exit 2 would BLOCK the
     # dispatch (the one thing the contract forbids). Route it straight to the handler,
     # bypassing argparse, so extra/unknown args can never turn into a blocking exit.
     argv_list = list(sys.argv[1:] if argv is None else argv)
+    _utf8_stdio()
     if argv_list[:2] == ["hook", "run"]:
         return cmd_hook_run(None, argv=argv_list[2:])
     args = build_parser().parse_args(argv_list)

@@ -516,15 +516,15 @@ with tempfile.TemporaryDirectory() as td:
     check("a CLI-named dispatch raises no false alert", alerts(s) == "", alerts(s))
 
     section("H2 — a hook exception is recorded, not swallowed")
-    import fcntl
+    from named_subagents import _lock_nb, _unlock
     s = "h2"
     qp = cli._queue_path(s, QD)
     fd = os.open(qp + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)                  # break it: a wedged peer holds the queue lock
+    _lock_nb(fd)                  # break it: a wedged peer holds the queue lock
     try:
         rc, out = run(pre(session=s), env())
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        _unlock(fd)
         os.close(fd)
     check("still fails open: exit 0, nothing on stdout", rc == 0 and out is None, str(out))
     msg = alerts(s)
@@ -533,14 +533,14 @@ with tempfile.TemporaryDirectory() as td:
 
     run(pre(session=s), env())                      # fails again, then: lock still wedged at Stop
     fd = os.open(qp + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    fcntl.flock(fd, fcntl.LOCK_UN)
+    _lock_nb(fd)
+    _unlock(fd)
     cli._record_alert(s, QD, "named-subagents: probe alert")
-    fcntl.flock(fd, fcntl.LOCK_EX)
+    _lock_nb(fd)
     try:
         msg = alerts(s)
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        _unlock(fd)
         os.close(fd)
     check("a wedged queue lock does not hide the main Stop's alerts", "probe alert" in msg, msg)
 
@@ -553,13 +553,13 @@ with tempfile.TemporaryDirectory() as td:
     import time as _t
     e = env(fresh_ledger=True)
     lfd = os.open(e["NAMED_SUBAGENTS_LEDGER"] + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(lfd, fcntl.LOCK_EX)                 # break it: another session holds the ledger
+    _lock_nb(lfd)                 # break it: another session holds the ledger
     try:
         t0 = _t.monotonic()
         rc, out = run(pre(session="m1"), e)
         took = _t.monotonic() - t0
     finally:
-        fcntl.flock(lfd, fcntl.LOCK_UN)
+        _unlock(lfd)
         os.close(lfd)
     check("a held ledger lock gives up within the budget", rc == 0 and took < 6, f"{took:.1f}s")
     check("...and the dispatch's failed pick is alerted", "could not pick a name" in alerts("m1"))
@@ -609,7 +609,9 @@ with tempfile.TemporaryDirectory() as td:
     r = subprocess.run(CLI + ["hook", "run"], cwd=ROOT, input=json.dumps(ev),
                        capture_output=True, text=True, env=ce)
     check("context-only SubagentStart still names the agent", "additionalContext" in r.stdout, r.stdout)
-    bad_q = dict(ce, NAMED_SUBAGENTS_QUEUE_DIR="/proc/named-subagents-nope")
+    blocker = os.path.join(td, "a-file-not-a-dir")
+    open(blocker, "w").close()
+    bad_q = dict(ce, NAMED_SUBAGENTS_QUEUE_DIR=os.path.join(blocker, "q"))
     r2 = subprocess.run(CLI + ["hook", "run"], cwd=ROOT, input=json.dumps(ev),
                         capture_output=True, text=True, env=bad_q)
     check("an unwritable state dir never costs the agent its name (the notice is optional)",

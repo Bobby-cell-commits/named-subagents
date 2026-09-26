@@ -41,6 +41,42 @@ try:
     import fcntl  # POSIX advisory file locks; absent on Windows
 except ImportError:  # pragma: no cover - non-POSIX
     fcntl = None  # type: ignore[assignment]
+try:
+    import msvcrt  # Windows byte-range locks (the fallback when fcntl is absent)
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None  # type: ignore[assignment]
+
+
+def _lock_nb(fd: int) -> None:
+    """Take an exclusive lock on an open lock file without blocking; raise OSError
+    if another process holds it. flock on POSIX; on Windows, msvcrt locks byte 0
+    (a lock past EOF is allowed, so the lock file can stay empty)."""
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    elif msvcrt is not None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+
+def _unlock(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+def _replace(src: str, dst: str) -> None:
+    """os.replace, retried briefly on Windows, where it fails with PermissionError
+    while another process has `dst` open (a reader mid-read)."""
+    for attempt in range(50):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 49:
+                raise
+            time.sleep(0.01)
 
 __version__ = "0.7.1"
 
@@ -668,7 +704,7 @@ class Ledger:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(data)
-            os.replace(tmp, self.path)  # atomic
+            _replace(tmp, self.path)  # atomic
         except BaseException:
             try:
                 os.unlink(tmp)
@@ -692,32 +728,32 @@ class Ledger:
         auto-namer hook passes a timeout so a stuck peer degrades to fail-open
         rather than a hung dispatch. Default (``None``) blocks, as before.
 
-        In-memory ledgers (path=None) and platforms without ``fcntl`` (Windows)
-        yield without a real lock -- serialize your own writers there.
+        POSIX uses ``flock``; Windows uses ``msvcrt.locking``. In-memory ledgers
+        (path=None) yield without a lock.
         """
-        if not self.path or fcntl is None:
+        if not self.path or (fcntl is None and msvcrt is None):
             yield self
             return
         fd = os.open(self.path + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        held = False
         try:
-            if timeout is None:
-                fcntl.flock(fd, fcntl.LOCK_EX)             # blocking (unchanged default)
-            else:
-                deadline = time.monotonic() + timeout
-                while True:
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except OSError:
-                        if time.monotonic() >= deadline:
-                            raise TimeoutError(
-                                f"ledger lock not acquired within {timeout}s")
-                        time.sleep(0.01)
+            deadline = None if timeout is None else time.monotonic() + timeout
+            while True:                                    # timeout=None blocks, as before
+                try:
+                    _lock_nb(fd)
+                    held = True
+                    break
+                except OSError:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"ledger lock not acquired within {timeout}s")
+                    time.sleep(0.01)
             self._load()  # freshest state now that we hold the lock
             yield self
         finally:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                if held:
+                    _unlock(fd)
             finally:
                 os.close(fd)
 
