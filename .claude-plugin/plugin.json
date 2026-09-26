@@ -1,6 +1,6 @@
 {
   "name": "named-subagents",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Distinct, task-themed names for parallel Claude Code subagents, shown in the live task tree.",
   "author": {
     "name": "Bobby-cell-commits"

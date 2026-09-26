@@ -5,6 +5,71 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-26
+
+**Name mode replaces roster mode.** The plugin now sets the Agent tool's `name`
+field, which the live task tree shows in its left column, for every agent type
+(general-purpose, Explore, custom agents such as `research-subagent`). Roster
+mode's callsign agent files cost ~57 tokens (built-in base) to ~183 tokens
+(custom base) each in every session's agent list, about 1,440 tokens for the
+default 6+6 crew; `name` costs 0 (36,882 vs 36,880 tokens measured). Names are
+drawn from the full ~395-name pool instead of a fixed crew. Design and evidence:
+`docs/research/2026-09-27-naming-alternatives.md`.
+
+### Changed
+- **Plugin hooks** (`hooks/hooks.json`): `hook run --name` on `PreToolUse`
+  (Agent|Task), `SubagentStart`, `SubagentStop` and `Stop`. The `SessionStart`
+  `roster ensure` hook is gone.
+- **PreToolUse** sets `name` plus the `<emoji> Name · task` label; the prompt and
+  `subagent_type` are untouched. A pick skips every name a live or just-queued
+  agent in the session holds (two live agents with one name break `SendMessage`
+  routing: the newest silently wins), and names equal to a local session title
+  (`~/.claude/sessions/*.json`). A model-supplied `name` is left alone but counts
+  as live.
+- **SubagentStart** binds the name to the `agent_id` (pairing with the oldest
+  queued dispatch of the same type, as `meta.json` does not exist yet at that
+  point) and injects the identity block, so agents still open with `[Name]`.
+- **SubagentStop** releases by `agent_id`. A SendMessage resume re-fires
+  Start/Stop without a dispatch; Start now recognises the agent and keeps its
+  name, and a Stop for an agent that is not live is a no-op, so it can never free
+  a name another live agent holds.
+- `hook install --name` registers name mode in settings.json (`--roster` is kept
+  as an alias). `hook run --retype`/`--release` (0.5/0.6 registrations) now run
+  name mode. `hook status`/`doctor` report name mode (`name_installed`,
+  `name_events`, `roster_leftover_files` in `--json`; the `retype_*`/`roster_*`
+  keys are gone).
+
+### Added
+- **Fail loud on a dropped name.** SubagentStop reads the subagent's `meta.json`
+  and records an alert when the name is missing, different, or the file itself is
+  missing; the main agent's `Stop` hook shows it as `named-subagents: …`. (Claude
+  Code 2.1.283 drops a `systemMessage` from SubagentStart/SubagentStop but renders
+  one from Stop.) `NAMED_SUBAGENTS_FAULT_DROP_NAME=1` omits `name` on purpose to
+  prove the alert fires; verified live.
+- `roster status` lists leftover 0.5/0.6 roster agent files; `roster uninstall
+  [--dry-run] [--dir DIR]` deletes them (marker-checked, with or without the old
+  manifest).
+- `tests/test_name_mode.py`; both it and `tests/test_roster.py` also run against
+  the JS port (`NAMED_SUBAGENTS_TEST_PORT=js`) and are now in CI. Parity step 11
+  covers the name-mode chain.
+
+### Removed
+- `roster install`, the retype hook, callsign file rendering and the
+  SessionStart re-render. `roster ensure` remains as a silent no-op so a stale
+  registration can't fail a session start.
+
+### Upgrading
+Update the plugin, then remove the old callsign files:
+`named-subagents roster uninstall --dry-run`, then without `--dry-run`. Start a
+new session afterwards so its agent list drops them.
+
+### Not yet verified
+Foreground dispatch rendering (every captured run was background), and a name
+colliding with a peer-session title in `SendMessage` routing (the pick avoids
+titles, but the collision itself was never tested).
+
+## [0.6.0] — 2026-09-26
+
 **Roster callsigns are freed when their agent finishes.** Before this, a session
 could name only one crew's worth of dispatches per base: a callsign stayed held
 until the 48h GC, so every later dispatch fell back to the description-prefix

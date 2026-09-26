@@ -34,36 +34,45 @@ claude plugin marketplace add Bobby-cell-commits/named-subagents
 claude plugin install named-subagents@named-subagents
 ```
 
-Needs `python3` (3.8+) on `PATH`; nothing else to install. Then **start Claude Code
-twice**: the first session writes a crew of 8 callsign agents into
-`~/.claude/agents`, but Claude Code only reads agent definitions at session start,
-so callsigns show from the second session on. (The first session still gets names
-in the task label.) A fan-out then looks like this in the live task tree:
+Needs `python3` (3.8+) on `PATH`; nothing else to install. New sessions show a
+distinct name for every subagent in the live task tree, for any agent type:
 
 ```
 ● main
-○ Hudson    🧭 Hudson · map the auth module
-○ Bosch     🔍 Bosch · root-cause the flaky test
-○ Explore   🧭 Magellan · find the billing entry points
+○ Diesel    🔧 Diesel · run the hostname check
+○ Hudson    🧭 Hudson · list /etc/apt
+○ Planck    🔬 Planck · research the release cycle
 ```
 
-What the plugin does, with three hooks:
+(Captured from a real run on Claude Code 2.1.283: a `general-purpose`, an
+`Explore` and a `research-subagent` dispatch.)
 
-- **Names every dispatch.** A `general-purpose` dispatch is switched to a free
-  callsign (left column) chosen by the task's theme, and every dispatch, of any
-  type, gets `Name · task` as its label (right column). Built-in types such as
-  `Explore` can't be cloned faithfully, so they get the label only.
-- **Frees names when agents finish** (`SubagentStop`), so a long session never
-  runs out of callsigns.
-- **Keeps the crew current** (`SessionStart`): if you edit an agent a crew was
-  cloned from (e.g. your own `research-subagent.md`), its callsigns are
-  re-rendered at the next session start.
+What the plugin does, with four hooks:
 
-If a callsign isn't loaded, Claude Code runs the dispatch as the original type,
-so a stale or missing crew degrades to label-only naming, never a failed
-dispatch. To give one of your own agents a crew, use the CLI
-(`pip install named-subagents`):
-`named-subagents roster install --base general-purpose --base <your-agent>`.
+- **Names every dispatch** (`PreToolUse`). It sets the Agent tool's `name` field,
+  which the task tree shows in its left column, and writes `<emoji> Name · task`
+  into the label, which finish notices quote. Names are themed by the task and
+  drawn from the full pool (~395 names) without repeats. Two live agents never
+  share a name, because `name` is also the address `SendMessage` routes by; names
+  equal to another local session's title are skipped too. A `name` the model
+  chose itself is left alone.
+- **Tells each agent who it is** (`SubagentStart`): the agent gets its name and
+  is asked to open its report with `[Name]`.
+- **Frees names when agents finish** (`SubagentStop`), keyed by agent ID, so a
+  resumed agent (`SendMessage` to a finished one) keeps its name.
+- **Fails loud** (`Stop`). After each agent finishes, the hook checks that Claude
+  Code recorded the name it set. If a future Claude Code version stops honoring
+  `name`, you see a `named-subagents: …` notice at the end of the turn instead
+  of silently losing the names.
+
+It costs nothing in the prompt: no agent files, no extra lines in the model's
+agent list. `NAMED_SUBAGENTS_HOOK_DISABLE=1` turns it off.
+
+**Upgrading from 0.5/0.6?** Those versions wrote callsign agent files
+(`Bosch.md`, `Hudson.md`, …) into `~/.claude/agents`. They still load into every
+session's agent list and cost about 57–183 tokens each. Remove them with
+`named-subagents roster uninstall` (`--dry-run` first to preview). It deletes
+only files carrying the roster marker, never your own agents.
 
 Already installed the hooks with `named-subagents hook install`? Run
 `named-subagents hook uninstall` first. While that install is present the
@@ -171,43 +180,42 @@ only ever add or remove their own entry.
 > `NAMED_SUBAGENTS_QUEUE_DIR`. Sharing state across both ports still fails open
 > (worst case: a dispatch goes un-named or falls back to role theming), never corrupt.
 
-## Roster mode: names in the live task tree (v0.5.0)
+## Name mode: names in the live task tree (v0.7.0)
 
-The auto-namer above delivers identity into the subagent's *context* — but the
-**live task tree label is the agent-definition name**, hardcoded; no hook can
-relabel a running `general-purpose` row. Roster mode makes the name *be* the
-definition: it generates a small crew of persona agent files (clones of a base
-agent with the persona baked in), and one `PreToolUse` hook rewrites each
-dispatch's `subagent_type` to a free callsign via `updatedInput`. The tree that
-used to show three `general-purpose` rows shows **Durga, Bosch, Chekhov** —
-themed by each dispatch's task.
+The auto-namer above delivers identity into the subagent's *context* only. Name
+mode also makes the name visible: a `PreToolUse` hook sets the Agent tool's
+`name` field via `updatedInput`, and the task tree shows it in its left column.
+This is what the plugin runs; without the plugin:
 
 ```bash
-named-subagents roster install                     # 8 callsigns wrapping general-purpose -> ~/.claude/agents
-named-subagents roster install --base research-subagent --count 6   # clone YOUR custom agent (tools/model/body preserved)
-named-subagents hook install --roster              # switch the hook to roster mode
-# start a NEW session (agent definitions load at session start) and fan out
+named-subagents hook install --name   # PreToolUse + SubagentStart + SubagentStop + Stop
+# start a NEW session and fan out
 ```
 
 Notes, honestly stated:
 
-- **This rides `updatedInput`**, which Claude Code silently dropped for the Agent
-  tool when >1 PreToolUse hook ran (#15897/#39814). Both issues are fixed —
-  re-verified live on CC 2.1.245 (2026-08-26), single- and multi-hook. On an older
-  CC the rewrite is ignored and you keep today's behavior (fail-open, never broken).
-- **Callsigns recycle across sessions by design** — a stable crew, not a burn-once
-  pool. Within one session concurrent siblings never share a name; when every
-  callsign is live, extra dispatches fall back to the description+prompt namer
-  (which now `avoid`s roster names, so the two mechanisms never collide).
-- A cloned custom base keeps its `tools:`/`model:` frontmatter and body verbatim.
-  A built-in base (`general-purpose`, `Explore`, …) can't inherit its internal
-  system prompt — roster clones of those get a generic body instead.
-- Each roster file adds one line to the model's agent list — keep the crew small
-  (default 8 per base). `roster uninstall` removes only files it generated
-  (marker-checked) plus the manifest.
-- Roster mode **replaces** the SubagentStart namer (`hook install --roster` prunes
-  it): the persona already lives in the definition, so a second namer would
-  double-name. Switch back any time with plain `hook install`.
+- **`name` is an undocumented Agent-tool input.** It is the same field the model
+  can pass itself, and it is Claude Code's `SendMessage`/`ListAgents` address,
+  but it is not in the tool's published schema, so a Claude Code update could
+  drop it. The `Stop` hook watches for exactly that: it checks each finished
+  agent's recorded name and shows a notice if it is missing. The label keeps the
+  name either way.
+- **This rides `updatedInput`**, which Claude Code once silently dropped for the
+  Agent tool when more than one PreToolUse hook ran (#15897/#39814, fixed; re-verified
+  on 2.1.245 and 2.1.283).
+- **Live names are unique per session.** Two live agents with one name break
+  `SendMessage` routing (the newest silently wins), so a pick skips every name a
+  live or just-dispatched agent holds, plus other local sessions' titles.
+- A resumed agent keeps its name: `SubagentStart`/`SubagentStop` are keyed by
+  agent ID, and a resume re-fires them without a new dispatch.
+- Name mode **replaces** the SubagentStart namer (`hook install --name` prunes it).
+  Switch back any time with plain `hook install`.
+- Verified foreground rendering is still open: every captured run so far was a
+  background dispatch (the model chose background even when asked otherwise).
+
+Roster mode (0.5/0.6) generated callsign agent files instead. It is removed; use
+`named-subagents roster status` to list leftover files and `roster uninstall` to
+delete them.
 
 ### For Claude Code — read this and run it
 
@@ -325,6 +333,8 @@ named-subagents bio Heimdall                    # who is this figure?
 named-subagents stats  --ledger .ledger.json    # pool burn-down, generations
 named-subagents doctor                          # self-checks — incl. a live auto-namer self-test
 named-subagents hook install                    # auto-name every fan-out (see "Auto-namer" above)
+named-subagents hook install --name             # name mode: names in the live task tree (what the plugin runs)
+named-subagents roster uninstall --dry-run      # list 0.5/0.6 roster agent files; drop --dry-run to delete them
 named-subagents hook status                     # is the hook installed? ledger usage
 ```
 
