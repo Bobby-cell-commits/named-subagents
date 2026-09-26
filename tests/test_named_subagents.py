@@ -742,8 +742,11 @@ with tempfile.TemporaryDirectory() as d:
     check("name beyond the 4KB read bound ignored", "TooDeep" not in got)
     check("file without frontmatter ignored", "Nope" not in got)
     check("non-.md file ignored", "NotMd" not in got)
-    check("unreadable file skipped without crashing", "Hidden" not in got)
-    check("exact extraction set", got == {"Scout", "Ranger", "Pathfinder", "BigOk"}, str(got))
+    # chmod 0 does not make a file unreadable on Windows, so there it is simply read.
+    if os.name != "nt":
+        check("unreadable file skipped without crashing", "Hidden" not in got)
+    check("exact extraction set", got == {"Scout", "Ranger", "Pathfinder", "BigOk"}
+          | ({"Hidden"} if os.name == "nt" else set()), str(got))
 
 # plan_fanout(avoid_installed=True) wiring
 with tempfile.TemporaryDirectory() as d:
@@ -834,7 +837,8 @@ def run_cli(*argv, env_extra=None):
     if env_extra:
         env.update(env_extra)
     return subprocess.run([PY, "-m", "named_subagents.cli"] + list(argv),
-                          capture_output=True, text=True, cwd=ROOT, env=env, timeout=120)
+                          capture_output=True, text=True, encoding="utf-8",
+                          cwd=ROOT, env=env, timeout=120)
 
 
 r = run_cli("--version")
