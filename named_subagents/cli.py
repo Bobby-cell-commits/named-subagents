@@ -23,7 +23,6 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import time
@@ -32,7 +31,6 @@ import named_subagents as ns
 from named_subagents import (
     Ledger,
     LEDGER_VERSION,
-    Registry,
     __version__,
     allocate,
     installed_agent_names,
@@ -262,23 +260,7 @@ def _doctor_checks(args):
             n_bios = sum(len(reg.categories[c].get("bios") or {}) for c in reg.categories)
             add("PASS", "bios", f"{n_bios} bios, all keys ⊆ names")
 
-    # 3. js/registry.json byte-equal to the canonical copy (repo layout only)
-    js_reg = os.path.join(_REPO_ROOT, "js", "registry.json")
-    canonical = os.path.join(_PKG_DIR, "registry.json")
-    if not os.path.isdir(os.path.join(_REPO_ROOT, "js")):
-        add("SKIP", "js-registry-sync", "no js/ sibling (installed layout)")
-    elif not os.path.isfile(js_reg):
-        add("SKIP", "js-registry-sync", "js/registry.json absent (placed by npm prepack)")
-    else:
-        with open(js_reg, "rb") as a, open(canonical, "rb") as b:
-            same = a.read() == b.read()
-        if same:
-            add("PASS", "js-registry-sync", "byte-equal to named_subagents/registry.json")
-        else:
-            add("FAIL", "js-registry-sync",
-                "js/registry.json differs from canonical (stale prepack artifact)")
-
-    # 4. ledger
+    # 3. ledger
     if not getattr(args, "ledger", None):
         add("SKIP", "ledger", "no --ledger given")
     else:
@@ -337,7 +319,7 @@ def _doctor_checks(args):
         except OSError as e:
             add("FAIL", "ledger-readable", f"{type(e).__name__}: {e}")
 
-    # 5. pins (from config)
+    # 4. pins (from config)
     pins = dict(cfg.get("pins") or {})
     if not pins:
         add("SKIP", "pins", "no pins in config")
@@ -348,7 +330,7 @@ def _doctor_checks(args):
         else:
             add("PASS", "pins", f"{len(pins)} pin(s), all sanitization-valid")
 
-    # 6. pool ∩ installed-agents overlap
+    # 5. pool ∩ installed-agents overlap
     installed = installed_agent_names()
     add("INFO", "installed-agents",
         f"{len(installed)} installed agent name(s): {sorted(installed)}" if installed
@@ -365,56 +347,27 @@ def _doctor_checks(args):
         else:
             add("PASS", "pool-agent-collision", "no pool name collides with an installed agent")
 
-    # 7. version triple-check (repo layout only)
+    # 6. version check (repo layout only): pyproject, __version__, plugin manifest
     pyproject = os.path.join(_REPO_ROOT, "pyproject.toml")
     if not os.path.isfile(pyproject):
         add("SKIP", "version", "no pyproject.toml sibling (installed layout)")
     else:
-        import re as _re
         with open(pyproject, "r", encoding="utf-8") as fh:
-            m = _re.search(r'^version\s*=\s*"([^"]+)"', fh.read(), _re.MULTILINE)
-        py_ver = m.group(1) if m else None
-        versions = {"__version__": __version__, "pyproject.toml": py_ver}
-        pkg_json = os.path.join(_REPO_ROOT, "js", "package.json")
-        js_note = ""
-        if os.path.isfile(pkg_json):
+            m = re.search(r'^version\s*=\s*"([^"]+)"', fh.read(), re.MULTILINE)
+        versions = {"__version__": __version__, "pyproject.toml": m.group(1) if m else None}
+        manifest = os.path.join(_REPO_ROOT, ".claude-plugin", "plugin.json")
+        if os.path.isfile(manifest):
             try:
-                with open(pkg_json, "r", encoding="utf-8") as fh:
-                    versions["js/package.json"] = json.load(fh).get("version")
+                with open(manifest, "r", encoding="utf-8") as fh:
+                    versions["plugin.json"] = json.load(fh).get("version")
             except (ValueError, OSError):
-                versions["js/package.json"] = None
-        else:
-            js_note = " (js/package.json absent — skipped)"
-        if len({v for v in versions.values()}) == 1:
-            add("PASS", "version", f"all at {__version__}{js_note}")
+                versions["plugin.json"] = None
+        if len(set(versions.values())) == 1:
+            add("PASS", "version", f"all at {__version__}")
         else:
             add("FAIL", "version", f"mismatch: {versions}")
 
-    # 8. Python/JS parity probe
-    node = shutil.which("node")
-    js_cli = os.path.join(_REPO_ROOT, "js", "cli.mjs")
-    js_mod = os.path.join(_REPO_ROOT, "js", "named_subagents.mjs")
-    if not (node and os.path.isfile(js_cli) and os.path.isfile(js_mod)):
-        add("SKIP", "parity", "node and/or js port not present")
-    else:
-        try:
-            out = subprocess.run(
-                [node, js_cli, "allocate", "--category", "default", "--count", "3", "--json"],
-                capture_output=True, text=True, timeout=30)
-            if out.returncode != 0:
-                add("SKIP", "parity",
-                    f"js cli exited {out.returncode} (interface mismatch or missing --json)")
-            else:
-                js_names = json.loads(out.stdout).get("nicknames")
-                py_names = allocate("default", 3, Registry.load())  # bundled, no ledger
-                if js_names == py_names:
-                    add("PASS", "parity", f"both ports allocate {py_names}")
-                else:
-                    add("FAIL", "parity", f"python={py_names} js={js_names}")
-        except Exception as e:  # noqa: BLE001 — only a clean-run mismatch may FAIL
-            add("SKIP", "parity", f"probe not comparable ({type(e).__name__}: {e})")
-
-    # 9. auto-namer hook — install status (informational) + a live self-test
+    # 7. auto-namer hook — install status (informational) + a live self-test
     sp = _settings_path(args)
     sdata, _serr = _read_settings(sp)
     _sh = sdata.get("hooks")

@@ -29,7 +29,7 @@ prompt text. **It performs no network I/O anywhere.** The surfaces that matter:
 | task-capture queue (`~/.local/state/named-subagents/queue/`, since 0.4.3) | semi-trusted local state | per-session filename derived from a **sanitized** `session_id` (`[A-Za-z0-9_.-]`, ≤ 80 chars — no traversal); entries parsed defensively (malformed lines skipped); 30s TTL; drained files removed; lock-serialized read-modify-write; task text is only ever fed to the keyword matcher, never executed or interpolated raw |
 | `.claude/agents/*.md` scan | **untrusted** | regex-only extraction, first 4 KB per file, non-regular files (FIFO/device) skipped, no YAML parser, read-only |
 | persona preamble → agent prompt | output surface | only sanitized names/themes/bios can be interpolated |
-| supply chain | — | **zero runtime dependencies** in both the Python and JS ports |
+| supply chain | — | **zero runtime dependencies** |
 
 ### Why name sanitization exists
 
@@ -75,13 +75,12 @@ draw the same "unique" name (a classic read-modify-write race). Within a single
 process (the common case — one orchestrator dispatching many agents) there is no
 race.
 
-Since 0.3 the **Python** port offers an **opt-in** `with ledger.lock():` context
+Since 0.3 there is an **opt-in** `with ledger.lock():` context
 manager (POSIX `flock` on a `<ledger>.lock` sidecar) that holds an exclusive
 cross-process lock and reloads fresh state for the whole load→allocate→save
 critical section, closing this race for genuine multi-process fan-out. It is a
-no-op on non-POSIX platforms (e.g. Windows) and for in-memory ledgers. The JS
-port has no stdlib `flock`, so if you fan out across separate OS processes there,
-serialize their allocations or give each its own ledger file.
+no-op on non-POSIX platforms (e.g. Windows) and for in-memory ledgers. The hooks
+always take this lock.
 
 ### What this library will never do
 

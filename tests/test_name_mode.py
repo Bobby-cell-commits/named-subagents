@@ -4,7 +4,6 @@ SubagentStop. The Agent tool's `name` field makes the live task tree show the
 name, so no agent files are needed.
 
 Run:  python tests/test_name_mode.py   (stdlib only, no pytest). Exit non-zero on any FAIL.
-      NAMED_SUBAGENTS_TEST_PORT=js python tests/test_name_mode.py   runs it against the JS port.
 
 The load-bearing properties:
 - a dispatch gets a bare pool name in `name` + the `<emoji> Name · task` label;
@@ -27,9 +26,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 PY = sys.executable
-# NAMED_SUBAGENTS_TEST_PORT=js runs the same checks against the JS CLI.
-PORT = os.environ.get("NAMED_SUBAGENTS_TEST_PORT", "py")
-CLI = ["node", os.path.join(ROOT, "js", "cli.mjs")] if PORT == "js" else [PY, "-m", "named_subagents"]
+CLI = [PY, "-m", "named_subagents"]
 SIG = "parallel agents in this run."
 
 from named_subagents import cli  # noqa: E402
@@ -421,14 +418,13 @@ with tempfile.TemporaryDirectory() as td:
           "name" not in ui and " · probe task" in (ui.get("description") or ""), str(ui))
 
     section("session locks stay fresh while in use")
-    if PORT != "js":                          # the JS port's lock is create/delete per use
-        lp = cli._queue_path("lk", QD) + ".lock"
-        with open(lp, "w"):
-            pass
-        os.utime(lp, (1, 1))
-        with cli._queue_lock(cli._queue_path("lk", QD)):
-            fresh = os.path.getmtime(lp) > 1000
-        check("acquiring a lock refreshes its mtime (so GC never deletes a live lock)", fresh)
+    lp = cli._queue_path("lk", QD) + ".lock"
+    with open(lp, "w"):
+        pass
+    os.utime(lp, (1, 1))
+    with cli._queue_lock(cli._queue_path("lk", QD)):
+        fresh = os.path.getmtime(lp) > 1000
+    check("acquiring a lock refreshes its mtime (so GC never deletes a live lock)", fresh)
 
     section("state stays bounded")
     ages = os.path.join(QD, "b-old.json")

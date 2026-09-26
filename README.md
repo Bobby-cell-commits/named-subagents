@@ -4,7 +4,7 @@
 userspace port of [Codex's per-instance `nickname_candidates`](https://developers.openai.com/codex/subagents).
 
 [![CI](https://github.com/Bobby-cell-commits/named-subagents/actions/workflows/ci.yml/badge.svg)](https://github.com/Bobby-cell-commits/named-subagents/actions/workflows/ci.yml)
-![python](https://img.shields.io/badge/python-3.8%2B-blue) ![node](https://img.shields.io/badge/node-%E2%89%A516-brightgreen) ![deps](https://img.shields.io/badge/runtime%20deps-0-success)
+![python](https://img.shields.io/badge/python-3.8%2B-blue) ![deps](https://img.shields.io/badge/runtime%20deps-0-success)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Bobby-cell-commits/named-subagents/master/assets/demo.gif"
@@ -56,7 +56,7 @@ record and shows a mix-up notice. Details and live verification: [CHANGELOG](CHA
 ## Without the plugin
 
 ```bash
-pip install named-subagents          # or: npm i -g named-subagents
+pip install named-subagents
 named-subagents hook install --name  # the plugin's four hooks, in ~/.claude/settings.json
 named-subagents hook status
 ```
@@ -117,7 +117,6 @@ are safe.
 
 ```bash
 pip install named-subagents     # Python 3.8+, zero dependencies
-npm  i      named-subagents     # Node ≥ 16, ESM, types included
 ```
 
 ```python
@@ -131,14 +130,7 @@ for a in plan:
     print(a.emoji, a.nickname, "—", a.bio)   # a.agent_kwargs() -> Agent-tool payload
 ```
 
-```js
-import { Registry, Ledger, planFanout } from "named-subagents";
-const plan = planFanout(["map auth", "map billing"], Registry.load(),
-                        { ledger: new Ledger(".named-subagents-ledger.json"), role: "Explore" });
-```
-
-Both ports are CI-checked for parity: same inputs give byte-identical output, and
-either can continue a ledger the other wrote. The generated prompt asks the agent
+The generated prompt asks the agent
 to open with `[Name]`; `attribute(nickname, report)` repairs a missing or wrong
 prefix when all you have is the report text.
 
@@ -161,8 +153,8 @@ named-subagents init                                      # scaffold a config
 - **Pins** bypass the ledger and are reserved out of normal draws.
 - **`--avoid-installed`** keeps names disjoint from your `.claude/agents` names.
 - **`--format`** emits snippets for Workflow scripts, swarm YAML, or plain labels.
-- **`doctor`** checks registry integrity, ledger health, pins, version strings,
-  Python↔JS parity, and self-tests the hooks.
+- **`doctor`** checks registry integrity, ledger health, pins and version strings,
+  and self-tests the hooks.
 - **`/named-fanout` skill:** `cp -r skill/named-fanout ~/.claude/skills/`.
 
 **Config** comes from `--config PATH`, `$NAMED_SUBAGENTS_CONFIG`, or
@@ -186,13 +178,11 @@ controls it. See [SECURITY.md](SECURITY.md).
 ```bash
 python3 tests/test_named_subagents.py && python3 tests/test_hook.py
 python3 tests/test_name_mode.py && python3 tests/test_roster.py
-node js/test_named_subagents.mjs && node js/test_hook.mjs
-scripts/parity_check.sh
 ```
 
-CI runs Python 3.8/3.12/3.13 and Node 18/20/22, both ports of the name-mode tests,
-the parity gate, ruff and coverage. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-parity discipline and [docs/RELEASING.md](docs/RELEASING.md) for releases. Design
+CI runs the suites on Python 3.8/3.12/3.13, plus ruff and coverage. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules and [docs/RELEASING.md](docs/RELEASING.md) for
+releases. The npm package and its JavaScript port were retired in 0.7.1. Design
 notes live in [docs/research/](docs/research/); [docs/COMMUNITY.md](docs/COMMUNITY.md)
 surveys the rest of the ecosystem, which names agents by role, not instance.
 

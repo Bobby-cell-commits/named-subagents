@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "named-subagents"
-version = "0.7.0"
+version = "0.7.1"
 description = "Themed, non-repeating nicknames for Claude Code subagents — a userspace port of Codex's nickname_candidates"
 readme = "README.md"
 license = {text = "MIT"}
@@ -71,7 +71,7 @@ source = ["named_subagents"]
 
 [tool.coverage.report]
 # The floor gates the LIBRARY CORE (named_subagents/__init__.py). `cli.py` is a
-# thin argparse shell exercised end-to-end by the CLI-subprocess + parity tests,
+# thin argparse shell exercised end-to-end by the CLI-subprocess tests,
 # which run in CHILD processes that in-process line coverage cannot observe — so
 # it is excluded from the floor here rather than reported as a misleading 0%.
 # (Full subprocess coverage would need a COVERAGE_PROCESS_START harness — future.)

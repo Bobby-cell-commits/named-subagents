@@ -1,20 +1,13 @@
 name: Release
 
-# Publish to PyPI and npm when a version tag (`vX.Y.Z`) is pushed.
+# Publish to PyPI and make a GitHub release when a version tag (`vX.Y.Z`) is
+# pushed. PyPI uses OIDC Trusted Publishing, so no API token is stored; the
+# one-time "trusted publisher" config on pypi.org is in docs/RELEASING.md.
 #
-# Supply-chain posture (on-brand for a security-forward tool): BOTH registries
-# use OIDC Trusted Publishing — no stored API token on either side.
-#   * PyPI  — Trusted Publishing (OIDC). The registry verifies a short-lived
-#     GitHub OIDC identity. One-time "trusted publisher" config on pypi.org.
-#   * npm   — Trusted Publishing (OIDC). The npm CLI (>= 11.5.1) exchanges the
-#     GitHub OIDC token for a short-lived credential and generates provenance
-#     automatically (no NODE_AUTH_TOKEN, no `--provenance` flag). One-time
-#     "trusted publisher" config on npmjs.com (see docs/RELEASING.md).
-#
-# A `verify` gate runs BEFORE either publish: it re-runs the full test matrix,
-# runs `doctor` (which cross-validates the four in-repo version strings), and
-# asserts the pushed git tag matches that version. Publishing is irreversible,
-# so a mistagged or red build must never reach a registry.
+# A `verify` gate runs BEFORE the publish: it re-runs every test suite, runs
+# `doctor` (which cross-checks the in-repo version strings), and asserts the
+# pushed tag matches that version. Publishing is irreversible, so a mistagged
+# or red build must never reach the registry.
 
 on:
   push:
@@ -34,9 +27,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "20"
 
       - name: Tag matches declared version
         run: |
@@ -44,24 +34,22 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           PY_VERSION="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')"
           if [ "$TAG" != "$PY_VERSION" ]; then
-            echo "::error::Pushed tag '${GITHUB_REF_NAME}' -> '${TAG}' does not match pyproject version '${PY_VERSION}'. Bump the version in all four source files (pyproject.toml, named_subagents/__init__.py, js/package.json, js/named_subagents.mjs) and CHANGELOG.md, then re-tag."
+            echo "::error::Pushed tag '${GITHUB_REF_NAME}' -> '${TAG}' does not match pyproject version '${PY_VERSION}'. Bump the version in pyproject.toml, named_subagents/__init__.py, .claude-plugin/plugin.json and CHANGELOG.md, then re-tag."
             exit 1
           fi
           echo "Tag ${GITHUB_REF_NAME} matches declared version ${PY_VERSION}."
 
       - name: Python tests
-        run: python tests/test_named_subagents.py
+        run: |
+          python tests/test_named_subagents.py
+          python tests/test_hook.py
+          python tests/test_name_mode.py
+          python tests/test_roster.py
 
-      - name: Doctor (cross-validates the four version strings + registry/ledger/parity)
+      - name: Doctor (cross-checks the version strings + registry/ledger)
         run: |
           pip install --quiet .
           named-subagents doctor
-
-      - name: Node tests
-        run: node js/test_named_subagents.mjs
-
-      - name: Cross-language parity
-        run: bash scripts/parity_check.sh
 
   pypi:
     name: Publish to PyPI (Trusted Publishing)
@@ -86,42 +74,12 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # Idempotent re-runs: don't fail if this version is already on PyPI
-          # (e.g. re-releasing a tag after fixing a downstream npm-only failure).
+          # (e.g. re-running the workflow after a GitHub-release failure).
           skip-existing: true
-
-  npm:
-    name: Publish to npm (trusted publishing)
-    needs: verify
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write # OIDC — trusted publishing exchanges this for a short-lived credential; also drives provenance
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-          # NO registry-url: it makes setup-node write an .npmrc with a placeholder
-          # `_authToken` (+ always-auth), so npm attempts token auth and never falls
-          # back to OIDC -> `E404 ... you do not have permission` on publish. Without
-          # it, npm uses the default registry and the OIDC trusted-publishing flow.
-      - name: Use a trusted-publishing-capable npm (>= 11.5.1)
-        # node 20 ships npm 10.x, which predates OIDC trusted publishing. Pin to the
-        # 11.x line: it supports trusted publishing AND runs on node 20 (npm@latest
-        # is 12.x, which requires node >= 22.22.2 -> EBADENGINE on this runner).
-        run: npm install -g npm@11
-      - name: Publish
-        # Trusted publishing: NO NODE_AUTH_TOKEN — the npm CLI exchanges the GitHub
-        # OIDC token for a short-lived credential and generates provenance
-        # automatically (no `--provenance` flag). Configure the trusted publisher on
-        # npmjs.com FIRST (docs/RELEASING.md) or this fails closed. `prepack` copies the
-        # canonical registry.json + README into js/ before packing.
-        working-directory: js
-        run: npm publish --access public
 
   github-release:
     name: Create GitHub Release
-    needs: [pypi, npm]
+    needs: pypi
     runs-on: ubuntu-latest
     permissions:
       contents: write # to create the release

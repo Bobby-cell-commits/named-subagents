@@ -12,7 +12,7 @@ repeats across runs, and every report comes back attributed as `[Nickname]`.
 ## Requirements
 
 The `named-subagents` CLI must be available — any one of:
-- `named-subagents` on PATH (pip or npm global install), or
+- `named-subagents` on PATH (`pip install named-subagents`), or
 - a checkout: `python3 -m named_subagents.cli` from the repo root.
 
 Resolve once: try `named-subagents --version`, fall back to the module form.

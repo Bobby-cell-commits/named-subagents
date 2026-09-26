@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-09-26
+
+**The npm package and the JavaScript port are retired.** The plugin runs the
+Python code bundled in the repo, and the `named-subagents` CLI and library stay
+on PyPI. Keeping a second implementation in lockstep (twin tests, a parity gate,
+a Node CI matrix) cost more than it served. `npm i named-subagents` stays at
+0.7.0 and is deprecated with a pointer here.
+
+### Removed
+- `js/` (the ESM port, its CLI, types and tests), `scripts/parity_check.sh`, the
+  `node`, `types` and `parity` CI jobs, and the `npm` release job.
+- `doctor`'s `js-registry-sync` and `parity` checks.
+
+### Changed
+- `doctor`'s version check now covers `.claude-plugin/plugin.json` alongside
+  `pyproject.toml` and `__version__`; a plugin release only reaches users when
+  that version changes.
+- The release `verify` gate runs all four Python suites (it ran one).
+- README rewritten around the plugin (494 → ~190 lines); the hero GIF is a real
+  task-tree capture (`scripts/render_tree_gif.py` reproduces it). The
+  `examples/demo.py` animation moved to the Library section.
+
 ## [0.7.0] — 2026-09-26
 
 **Name mode replaces roster mode.** The plugin now sets the Agent tool's `name`

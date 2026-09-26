@@ -4,7 +4,6 @@ side of name mode: `roster status|uninstall|ensure`, `hook install --name`
 (`--roster` kept as an alias), `hook status`, and the plugin stand-down.
 
 Run:  python tests/test_roster.py   (stdlib only, no pytest). Exit non-zero on any FAIL.
-      NAMED_SUBAGENTS_TEST_PORT=js python tests/test_roster.py   runs it against the JS port.
 
 The load-bearing properties:
 - `roster uninstall` deletes only files carrying the roster marker (never a
@@ -24,9 +23,7 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 PY = sys.executable
-# NAMED_SUBAGENTS_TEST_PORT=js runs the same checks against the JS CLI.
-PORT = os.environ.get("NAMED_SUBAGENTS_TEST_PORT", "py")
-CLI = ["node", os.path.join(ROOT, "js", "cli.mjs")] if PORT == "js" else [PY, "-m", "named_subagents"]
+CLI = [PY, "-m", "named_subagents"]
 MARKER = "named-subagents-autonamer"
 ROSTER_MARKER = "named-subagents-roster v1"
 
@@ -192,35 +189,32 @@ with tempfile.TemporaryDirectory() as td:
     check("doctor self-tests the name-mode chain", st.startswith("[PASS]"), st or r.stdout[-400:])
 
     section("plugin hooks stand down when a settings.json install exists")
-    if PORT == "js":
-        print("  [SKIP] the plugin runs the Python port only (hooks/run.py)")
-    else:
-        home = os.path.join(td, "home")
-        os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
-        plug_env = dict(ENV, HOME=home)
-        ev = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "plug",
-              "tool_input": {"subagent_type": "general-purpose", "description": "t", "prompt": "p"}}
-        r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
-                    stdin_data=json.dumps(ev))
-        check("plugin names the dispatch when no settings install exists",
-              '"name"' in r.stdout, r.stdout)
-        with open(os.path.join(home, ".claude", "settings.json"), "w", encoding="utf-8") as fh:
-            json.dump({"hooks": {"PreToolUse": [{"matcher": "Agent|Task", "hooks": [
-                {"type": "command", "command": f"x hook run --name --managed-by {MARKER}"}]}]}}, fh)
-        r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
-                    stdin_data=json.dumps(dict(ev, session_id="plug2")))
-        check("plugin is silent on an event settings.json already handles",
-              r.returncode == 0 and not r.stdout.strip(), r.stdout)
-        # A 0.5/0.6 settings install registered only PreToolUse + SubagentStop; the
-        # plugin must still run SubagentStart (identity) and Stop (alerts).
-        run_cli(["hook", "run", "--retype"], env_extra=plug_env,     # the settings copy
-                stdin_data=json.dumps(dict(ev, session_id="plug3")))
-        r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
-                    stdin_data=json.dumps({"hook_event_name": "SubagentStart",
-                                           "session_id": "plug3", "agent_id": "p3",
-                                           "agent_type": "general-purpose"}))
-        check("plugin still handles an event settings.json does not register",
-              '"additionalContext"' in r.stdout, r.stdout + r.stderr)
+    home = os.path.join(td, "home")
+    os.makedirs(os.path.join(home, ".claude"), exist_ok=True)
+    plug_env = dict(ENV, HOME=home)
+    ev = {"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "plug",
+          "tool_input": {"subagent_type": "general-purpose", "description": "t", "prompt": "p"}}
+    r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
+                stdin_data=json.dumps(ev))
+    check("plugin names the dispatch when no settings install exists",
+          '"name"' in r.stdout, r.stdout)
+    with open(os.path.join(home, ".claude", "settings.json"), "w", encoding="utf-8") as fh:
+        json.dump({"hooks": {"PreToolUse": [{"matcher": "Agent|Task", "hooks": [
+            {"type": "command", "command": f"x hook run --name --managed-by {MARKER}"}]}]}}, fh)
+    r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
+                stdin_data=json.dumps(dict(ev, session_id="plug2")))
+    check("plugin is silent on an event settings.json already handles",
+          r.returncode == 0 and not r.stdout.strip(), r.stdout)
+    # A 0.5/0.6 settings install registered only PreToolUse + SubagentStop; the
+    # plugin must still run SubagentStart (identity) and Stop (alerts).
+    run_cli(["hook", "run", "--retype"], env_extra=plug_env,     # the settings copy
+            stdin_data=json.dumps(dict(ev, session_id="plug3")))
+    r = run_cli(["hook", "run", "--name", "--plugin"], env_extra=plug_env,
+                stdin_data=json.dumps({"hook_event_name": "SubagentStart",
+                                       "session_id": "plug3", "agent_id": "p3",
+                                       "agent_type": "general-purpose"}))
+    check("plugin still handles an event settings.json does not register",
+          '"additionalContext"' in r.stdout, r.stdout + r.stderr)
 
 print()
 if failures:

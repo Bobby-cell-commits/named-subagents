@@ -47,59 +47,6 @@ jobs:
       - name: Doctor
         run: named-subagents doctor
 
-  node:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["18", "20", "22"]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-      - name: Unit tests
-        run: node js/test_named_subagents.mjs
-      - name: Auto-namer hook tests
-        run: node js/test_hook.mjs
-      - name: Name-mode + migration tests (JS port, driven by the Python harness)
-        run: |
-          NAMED_SUBAGENTS_TEST_PORT=js python3 tests/test_name_mode.py
-          NAMED_SUBAGENTS_TEST_PORT=js python3 tests/test_roster.py
-      - name: Demo smoke
-        run: node js/demo.mjs > /dev/null
-      - name: Pack smoke (prepack copies canonical registry)
-        working-directory: js
-        run: |
-          npm pack --dry-run
-          test -f registry.json && cmp registry.json ../named_subagents/registry.json
-
-  types:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-      - name: TypeScript surface check (.d.ts exercised by types_test.ts)
-        # No install step: run tsc straight from the registry via npx, keeping
-        # the package's zero-dependency posture (typescript is not even a devDep).
-        working-directory: js
-        run: npx -y -p typescript@5 tsc -p tsconfig.json
-
-  parity:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "20"
-      - name: Cross-language parity
-        run: bash scripts/parity_check.sh
-
   lint:
     runs-on: ubuntu-latest
     steps:

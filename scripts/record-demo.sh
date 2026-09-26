@@ -8,7 +8,6 @@
 # Uses the installed `named-subagents` CLI by default. From a source checkout
 # without installing, point it at a port:
 #   NS_CLI="python -m named_subagents.cli" bash scripts/record-demo.sh
-#   NS_CLI="node js/cli.mjs"               bash scripts/record-demo.sh
 #
 # DEMO_PACE controls the pause (seconds) between steps; set 0 for no pauses.
 set -euo pipefail
@@ -33,5 +32,5 @@ run "assign --role Explore --task 'map the router' --count 4 --ledger '$LEDGER' 
 say "Run it again: the ledger guarantees no repeat across iterations"
 run "assign --role Explore --task 'map the router once more' --count 4 --ledger '$LEDGER' --format labels"
 
-say "Self-check: registry, ledger, pins, version, cross-port parity"
+say "Self-check: registry, ledger, pins, version, hook self-tests"
 run "doctor --ledger '$LEDGER'"
