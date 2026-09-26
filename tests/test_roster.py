@@ -14,6 +14,7 @@ The load-bearing properties:
 - the two mechanisms never surface the same name side by side (avoid=roster).
 """
 import json
+import time
 import os
 import subprocess
 import sys
@@ -178,6 +179,41 @@ with tempfile.TemporaryDirectory() as td:
     check("exhausted roster falls back to mutate (type preserved)",
           ui.get("subagent_type") == "general-purpose", str(out))
 
+    section("SubagentStop — a finished callsign returns to the pool")
+
+    def stop_event(agent_type, session="s1"):
+        return {"hook_event_name": "SubagentStop", "session_id": session,
+                "agent_id": "a1", "agent_type": agent_type}
+
+    def hook_run_release(event, env_extra):
+        r = run_cli(["hook", "run", "--release"], env_extra=env_extra,
+                    stdin_data=json.dumps(event))
+        return r.returncode, r.stdout
+
+    rc, so = hook_run_release(stop_event(got1), ENV)
+    check("release: exit 0, output-free (output could block the stop)",
+          rc == 0 and not so.strip(), so)
+    rc, out = hook_run_retype(dispatch_event(description="after release"), ENV)
+    got5 = ((out or {}).get("updatedInput") or {}).get("subagent_type")
+    check("released callsign is reused instead of falling back", got5 == got1,
+          f"{got1} vs {got5}")
+    rc, so = hook_run_release(stop_event("general-purpose"), ENV)
+    check("stop of a non-callsign type: silent no-op", rc == 0 and not so.strip())
+    rc, so = hook_run_release(stop_event(got2, session="s-other"), ENV)
+    rc, out = hook_run_retype(dispatch_event(description="still held"), ENV)
+    ui = (out or {}).get("updatedInput") or {}
+    check("another session's stop does not free this session's name",
+          ui.get("subagent_type") == "general-purpose", str(out))
+    r = run_cli(["hook", "run", "--release"], env_extra=ENV, stdin_data="{nope")
+    check("release fail-open on garbage", r.returncode == 0 and not r.stdout.strip())
+
+    qd = ENV["NAMED_SUBAGENTS_QUEUE_DIR"]
+    stale = os.path.join(qd, "u-dead-session.json.lock")
+    open(stale, "w").close()
+    os.utime(stale, (time.time() - 72 * 3600,) * 2)
+    hook_run_retype(dispatch_event(session="s-gc"), ENV)
+    check("stale .lock sidecars are garbage-collected", not os.path.exists(stale))
+
     section("retype — fail-open on garbage")
     for label, payload in (("empty stdin", ""), ("non-JSON", "{nope"),
                            ("wrong tool", json.dumps({"hook_event_name": "PreToolUse",
@@ -226,11 +262,16 @@ with tempfile.TemporaryDirectory() as td:
                 for m in data["hooks"]["PreToolUse"] for h in m.get("hooks", [])]
     check("re-install is idempotent (one retype entry)",
           sum(1 for c in pre_cmds if "--retype" in c) == 1, str(pre_cmds))
+    stop_cmds = [h.get("command") or ""
+                 for m in data["hooks"].get("SubagentStop", []) for h in m.get("hooks", [])]
+    check("release entry registered once on SubagentStop",
+          sum(1 for c in stop_cmds if "--release" in c and MARKER in c) == 1, str(stop_cmds))
 
     r = run_cli(["hook", "status", "--settings", sp, "--json"], env_extra=ENV)
     st = json.loads(r.stdout)
     check("status reports retype_installed", st.get("retype_installed") is True, r.stdout)
     check("status reports roster_installed", st.get("roster_installed") is True, r.stdout)
+    check("status reports release_installed", st.get("release_installed") is True, r.stdout)
     check("status: no legacy false-positive", st.get("legacy_pretooluse") is False, r.stdout)
 
     # switching back: plain install must replace the retype entry with SS + capture
@@ -246,6 +287,15 @@ with tempfile.TemporaryDirectory() as td:
     check("mode switch: SS + capture registered",
           any(MARKER in c for c in ss_cmds) and any("--capture" in c for c in pre_cmds))
     check("foreign hook still untouched", any(c == "somebody-elses-hook" for c in pre_cmds))
+    check("mode switch: release entry pruned by plain install",
+          not any(MARKER in (h.get("command") or "")
+                  for m in data["hooks"].get("SubagentStop", []) for h in m.get("hooks", [])))
+    run_cli(["hook", "install", "--roster", "--settings", sp])
+    run_cli(["hook", "uninstall", "--settings", sp])
+    data = json.load(open(sp, encoding="utf-8"))
+    check("uninstall removes the release entry too",
+          not any(MARKER in (h.get("command") or "")
+                  for m in data["hooks"].get("SubagentStop", []) for h in m.get("hooks", [])))
 
     section("roster uninstall")
     r = run_cli(["roster", "uninstall", "--state", STATE])

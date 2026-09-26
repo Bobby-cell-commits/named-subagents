@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [Unreleased]
+
+**Roster callsigns are freed when their agent finishes.** Before this, a session
+could name only one crew's worth of dispatches per base: a callsign stayed held
+until the 48h GC, so every later dispatch fell back to the description-prefix
+namer even with the whole crew idle.
+
+### Fixed
+- `hook install --roster` now also registers an output-free `SubagentStop` hook
+  (`hook run --release`) that returns the finished agent's callsign to the
+  session's pool. Verified live on CC 2.1.283 (the event's `session_id` matches
+  the dispatching session). `hook status` reports it (`release:` line;
+  `release_installed` in `--json`) and warns when it is missing. Plain
+  `hook install` and `hook uninstall` remove it.
+- Stale `.lock` sidecars in the queue dir are garbage-collected with the
+  used-files (they previously accumulated one per session).
+- `doctor` no longer reports the roster's own callsign files as
+  `pool-agent-collision` (it always failed once roster mode was installed).
+
+Re-run `named-subagents hook install --roster` to pick up the release hook.
+
 ## [0.5.0] — 2026-08-26
 
 **Roster mode: callsigns in the LIVE TASK TREE.** The tree label is the

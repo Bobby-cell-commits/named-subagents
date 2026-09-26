@@ -491,7 +491,9 @@ function doctorChecks(opts) {
       ? `${installed.size} installed agent name(s): [${[...installed].sort().map((n) => `'${n}'`).join(", ")}]`
       : "no installed agent definitions found");
   if (reg !== null) {
-    const installedL = new Set([...installed].map((n) => n.toLowerCase()));
+    // Our own roster callsign files are pool names by construction, not collisions.
+    const own = new Set(Object.keys((loadRoster() || {}).files || {}).map((n) => n.toLowerCase()));
+    const installedL = new Set([...installed].map((n) => n.toLowerCase()).filter((n) => !own.has(n)));
     const clash = Object.keys(reg.categories)
       .flatMap((c) => reg.names(c))
       .filter((n) => installedL.has(n.toLowerCase()))
@@ -1005,13 +1007,15 @@ function rosterUsedPath(sessionId, queueDir = null) {
   return join(queueDir || hookQueueDir(), `u-${sid}.json`);
 }
 
-/** Best-effort GC of stale per-session used-files (sessions end silently). */
+/** Best-effort GC of stale per-session used-files (sessions end silently), plus
+ * their `.lock` sidecars and any other stale queue lock — nothing else deletes
+ * those, so without this they accumulate one per session forever. */
 function rosterPruneUsed(queueDir = null) {
   const qd = queueDir || hookQueueDir();
   try {
     const now = Date.now();
     for (const fn of readdirSync(qd)) {
-      if (fn.startsWith("u-") && fn.endsWith(".json")) {
+      if ((fn.startsWith("u-") && fn.endsWith(".json")) || fn.endsWith(".lock")) {
         const p = join(qd, fn);
         try {
           if (now - statSync(p).mtimeMs > ROSTER_USED_TTL * 1000) unlinkSync(p);
@@ -1064,6 +1068,54 @@ function rosterPick(roster, baseType, category, sessionId, queueDir = null) {
     }
   });
   return picked;
+}
+
+/** Return a finished callsign to this session's free pool. Without it a session
+ * could name only one crew's worth of dispatches per base — every later dispatch
+ * fell back to the description-prefix namer even with the whole crew idle.
+ * Returns the released name, or null when `agentType` is not one of our
+ * callsigns or was not held. */
+function rosterRelease(roster, agentType, sessionId, queueDir = null) {
+  if (!isObj(roster) || typeof agentType !== "string") return null;
+  if (!hasOwn(roster.files || {}, agentType)) return null;
+  const upath = rosterUsedPath(sessionId, queueDir);
+  if (!existsSync(upath)) return null;
+  let released = null;
+  withLedgerLock(upath, () => {
+    let used;
+    try {
+      const data = JSON.parse(readFileSync(upath, "utf8"));
+      used = isObj(data) ? (data.used || []).filter((n) => typeof n === "string") : [];
+    } catch { return; }
+    const i = used.indexOf(agentType);
+    if (i < 0) return;
+    used.splice(i, 1);
+    const tmp = `${upath}.${process.pid}.tmp`;
+    try { unlinkSync(tmp); } catch { /* not present */ }
+    const fd = openSync(tmp, "wx");
+    try {
+      writeFileSync(fd, JSON.stringify({ used: used.sort(), ts: Date.now() / 1000 }));
+      closeSync(fd);
+      renameSync(tmp, upath);
+    } catch (e) {
+      try { closeSync(fd); } catch { /* already closed */ }
+      try { unlinkSync(tmp); } catch { /* nothing to clean */ }
+      throw e;
+    }
+    released = agentType;
+  });
+  return released;
+}
+
+/** SubagentStop handler for roster mode: release the finished agent's callsign.
+ * Output-free (a SubagentStop output can block the subagent from stopping), so
+ * it always returns null; the release itself is the side effect. */
+function hookSubagentStop(event, roster = null, queueDir = null) {
+  if (process.env.NAMED_SUBAGENTS_HOOK_DISABLE) return null;
+  if (!isObj(event)) return null;
+  const ros = roster !== null ? roster : loadRoster();
+  rosterRelease(ros, event.agent_type, event.session_id, queueDir);
+  return null;
 }
 
 /** PreToolUse handler for roster mode: rewrite `subagent_type` to a free roster
@@ -1265,6 +1317,7 @@ function cmdHookRun(argv = null) {
     const event = JSON.parse(readFileSync(0, "utf8"));
     const ev = isObj(event) ? event.hook_event_name : null;
     const out = capture ? hookPreCapture(event)
+      : ev === "SubagentStop" ? hookSubagentStop(event)
       : ev === "SubagentStart" ? hookSubagentStart(event)
       : retype ? hookRetype(event) : hookMutate(event);
     if (out !== null) process.stdout.write(pyDumps({ hookSpecificOutput: out }));
@@ -1301,6 +1354,18 @@ function isCaptureHook(h) {
 function hookCommandRetype() {
   const cli = fileURLToPath(import.meta.url);
   return `"${process.execPath}" "${cli}" hook run --retype --managed-by ${HOOK_MARKER}`;
+}
+
+/** The roster-mode SubagentStop registration: frees a finished callsign. */
+function hookCommandRelease() {
+  const cli = fileURLToPath(import.meta.url);
+  return `"${process.execPath}" "${cli}" hook run --release --managed-by ${HOOK_MARKER}`;
+}
+
+/** True for the roster-mode SubagentStop registration (ours + --release). */
+function isReleaseHook(h) {
+  const cmd = isObj(h) ? h.command || "" : "";
+  return cmd.includes(HOOK_MARKER) && cmd.includes("--release");
 }
 
 /** True for the v0.5.0 roster-mode PreToolUse registration (ours + --retype). */
@@ -1342,6 +1407,18 @@ function hookInstallRoster(opts) {
     data.hooks.PreToolUse.push({ matcher: "Agent|Task",
       hooks: [{ type: "command", command: cmd }] });
   }
+  if (data.hooks.SubagentStop === undefined) data.hooks.SubagentStop = [];
+  if (!Array.isArray(data.hooks.SubagentStop)) {
+    console.error(`error: ${sp} has a non-list 'hooks.SubagentStop'; refusing to modify.`); return 1;
+  }
+  const rcmd = hookCommandRelease();
+  let relPresent = false;
+  for (const [, h] of iterOurHooks(data.hooks.SubagentStop)) {
+    h.command = rcmd;
+    relPresent = true;
+    break;
+  }
+  if (!relPresent) data.hooks.SubagentStop.push({ hooks: [{ type: "command", command: rcmd }] });
   writeSettings(sp, data, existed);
   const mig = removed
     ? `\n  replaced ${removed} auto-namer entr${removed === 1 ? "y" : "ies"} (roster mode supersedes them)`
@@ -1351,7 +1428,9 @@ function hookInstallRoster(opts) {
     : "\n  ⚠ no roster installed yet — run `named-subagents roster install` "
       + "(until then, dispatches fall back to description+prompt naming)";
   console.log(`installed the roster retype hook in ${sp}\n`
-    + `  event: PreToolUse   matcher: Agent|Task\n  command: ${cmd}${mig}${rosLine}\n`
+    + `  event: PreToolUse   matcher: Agent|Task\n  command: ${cmd}\n`
+    + "  event: SubagentStop (frees a finished agent's callsign)\n"
+    + `  command: ${rcmd}${mig}${rosLine}\n`
     + "New Claude Code sessions will dispatch fan-outs under roster callsigns —\n"
     + "visible in the live task tree. Verify with `named-subagents hook status`.");
   return 0;
@@ -1446,6 +1525,9 @@ function cmdHookInstall(opts) {
   // it must survive this pruning, hence the `only` predicate.
   const [preNew, preRemoved] = pruneOurHooks(data.hooks.PreToolUse, (h) => !isCaptureHook(h));
   if (preRemoved) data.hooks.PreToolUse = preNew;
+  // Switching back from roster mode: its SubagentStop release entry has no job here.
+  const [stopNew, stopRemoved] = pruneOurHooks(data.hooks.SubagentStop);
+  if (stopRemoved) data.hooks.SubagentStop = stopNew;
   const migrated = preRemoved ? " (migrated the legacy PreToolUse entry)" : "";
   let refreshed = false;
   for (const [, h] of iterOurHooks(data.hooks.SubagentStart)) {
@@ -1486,9 +1568,9 @@ function cmdHookUninstall(opts) {
   const { data, error } = readSettings(sp);
   if (error) { console.error(`error: ${sp} is not valid JSON (${error}); refusing to modify.`); return 1; }
   if (!isObj(data.hooks)) { console.log(`no auto-namer hook found in ${sp}`); return 0; }
-  // Remove our entry from BOTH events: SubagentStart (current) and PreToolUse (legacy).
+  // Remove our entries from every event we register on.
   let total = 0;
-  for (const ev of ["SubagentStart", "PreToolUse"]) {
+  for (const ev of ["SubagentStart", "PreToolUse", "SubagentStop"]) {
     const [newList, removed] = pruneOurHooks(data.hooks[ev]);
     if (removed) { data.hooks[ev] = newList; total += removed; }
   }
@@ -1511,6 +1593,8 @@ function cmdHookStatus(opts) {
   let retype = false;
   const hk = isObj(data.hooks) ? data.hooks : {};
   for (const [, h] of iterOurHooks(hk.SubagentStart || [])) { installed = true; cmd = h.command; }
+  let release = false;
+  for (const [, h] of iterOurHooks(hk.SubagentStop || [])) if (isReleaseHook(h)) release = true;
   for (const [, h] of iterOurHooks(hk.PreToolUse || [])) {
     if (isCaptureHook(h)) { capture = true; continue; }   // the v0.4.3 task-capture entry
     if (isRetypeHook(h)) {               // the v0.5.0 roster-mode entry
@@ -1536,7 +1620,7 @@ function cmdHookStatus(opts) {
       settings_path: sp, settings_malformed: !!error, installed, command: cmd,
       ledger_path: lp, ledger_exists: ledExists, total_allocated: allocated,
       disabled, legacy_pretooluse: legacy, capture_installed: capture,
-      retype_installed: retype, roster_path: rosterStatePath(),
+      retype_installed: retype, release_installed: release, roster_path: rosterStatePath(),
       roster_installed: !!loadRoster(),
     }, { indent: 2 }));
     return 0;
@@ -1550,6 +1634,8 @@ function cmdHookStatus(opts) {
     const ros = loadRoster();
     console.log(`  roster:   ${rosterStatePath()}  `
       + `(${ros ? "installed" : "⚠ NOT installed — run `named-subagents roster install`"})`);
+    console.log("  release:  " + (release ? "yes  (SubagentStop frees finished callsigns)"
+      : "⚠ no — callsigns are never freed within a session; re-run `hook install --roster`"));
     if (installed || capture) {
       console.log("  ⚠ mixed:  auto-namer entries are also present — "
         + "re-run `hook install --roster` to prune them");
