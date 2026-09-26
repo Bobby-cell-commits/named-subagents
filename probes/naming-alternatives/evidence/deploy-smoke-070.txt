@@ -1,0 +1,47 @@
+# deploy smoke 0.7.0: INSTALLED plugin (marketplace, user scope, 0.6.0 -> 0.7.0 via 'claude plugin update'), fresh session in an empty scratch dir, haiku, CC 2.1.283 (Claude Code), 2026-09-26T18:59:10Z
+# Full user settings (no --plugin-dir, no --setting-sources), default permission mode; subagents told to use no tools. 'roster uninstall' had removed all 12 roster files first (only research-subagent.md left in ~/.claude/agents).
+# Result: the task tree shows Ritchie and Turing; both reports open with their own [Name]; meta.json name + toolUseId recorded for both; no 'named-subagents:' alert in any frame; the session's Agent-tool list has no callsign agents.
+
+## frame (running)
+   └ Write a 4-line poem about mountains
+✻ Hullaballooing… (5s · ↓ 363 tokens · thought for 2s)
+                                                                    tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [Haiku 4.5]  UTC 18:57 | Buc 21:57  22% ctx used
+  session: 41% (02:27) | weekly: 9% (1d20h)
+  /tmp/claude-1000/-home-bogdan-Dev-open-brain/edc5e7b2-b698-482a-9045-2a914cfe507b/scratchpad/smoke
+  ►► auto permissions on (shift+tab to cycle)
+  ⏸ manual mode on · ← for agents
+  ● main
+  ◯ Ritchie  ⌨️  Ritchie · Write a 4-line poem about rivers                                                                                                            0s
+  ◯ Turing   ⌨️ Turing · Write a 4-line poem about mountains                                                                                                          0s
+
+## frame (done)
+● Agent "⌨️  Ritchie · Write a 4-line poem about rivers" finished · 2s
+● Agent "⌨️ Turing · Write a 4-line poem about mountains" finished · 3s
+● Agent 1 — Rivers poem (full report):
+  Rivers flow from mountains high,
+  Carrying waters, never dry,
+  Through the valleys, wide and deep,
+  Ancient paths they forever keep.
+  Agent 2 — Mountains poem (full report):
+  Peaks rise high against the sky,
+  Ancient stone that won't deny,
+  Snow and wind through every pass,
+  Time flows slow where stone holds fast.
+  Available agent types in the Agent tool:
+  1. claude — Catch-all for any task that doesn't fit a more specific agent.
+  2. claude-code-guide — Questions about Claude Code, Claude Agent SDK, Claude API, Claude Tag, or claude plugin eval.
+  3. Explore — Fast read-only search agent for locating code by pattern, grep, or cross-file lookups.
+  4. general-purpose — General-purpose agent for researching complex questions, searching code, and executing multi-step tasks.
+  5. Plan — Software architect agent for designing implementation plans.
+  6. research-subagent — Scoped research subagent for the /deep-research workflow with strict citation and anti-anchoring discipline.
+  7. statusline-setup — Agent to configure Claude Code's status line setting.
+
+## subagent meta.json + first report line
+Turing toolu_016vVPzUMiQWWCmKfkkodYPj ⌨️ Turing · Write a 4-line poem about mountains | report: [Turing]
+Ritchie toolu_015LVfkGyrv4siALewbZWQiv ⌨️ Ritchie · Write a 4-line poem about rivers | report: [Ritchie]
+
+## alerts: 0 of 75 frames contain 'named-subagents:'
