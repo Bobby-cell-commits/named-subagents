@@ -83,10 +83,32 @@ The `Stop` registration runs `python3` at the end of every main-agent turn
 (~90 ms measured, mostly interpreter start-up; it reads one file when there is
 nothing to report).
 
-### Not yet verified
-Foreground dispatch rendering (every captured run was background), and a name
-colliding with a peer-session title in `SendMessage` routing (the pick avoids
-titles, but the collision itself was never tested).
+### Verified live (CC 2.1.283, `probes/naming-alternatives/evidence/*-070.txt`)
+- **Foreground dispatch**: the tree shows the name for foreground agents too
+  (`tree-foreground-070.txt`); the inline "Running N agents" block shows the
+  model's original description, not the label.
+- **Peer-session title collision**: the pick skips a live peer's title. When the
+  model itself names a subagent after a peer title, `SendMessage(to: <name>)`
+  reaches the session's own subagent, with no error; the peer is reachable only
+  by its `[ref]` while the subagent lives (`peer-title-collision-070.txt`).
+- **Permission-dialog denial** behaves like a hook deny: `PreToolUse` runs before
+  the dialog, and "No" fires no `PermissionDenied`, `PostToolUseFailure` or
+  `Stop`. A same-type dispatch inside the 30s queue TTL is told the refused name;
+  `SubagentStop` repairs it and the mix-up notice shows
+  (`permission-dialog-deny-070.txt`).
+- **Parallel race**: 8 same-type dispatches in one message, 3 runs, 24/24 bound
+  to their own dispatch (`race-8-parallel-070.txt`).
+
+### Fixed (found by the denial probe)
+- After `SubagentStop` repaired a pairing whose queue entry belonged to a
+  dispatch that never started, the agent's record kept the refused name, so a
+  later `SendMessage` resume held the wrong name live. The record now takes the
+  agent's name from its `meta.json` (the queued entry expires after 30s, so it
+  cannot be the source for a longer-running agent).
+- Known limit: while such an agent runs, the session holds the refused name as
+  live instead of the agent's own, so a model-supplied duplicate of the agent's
+  name is not reported until it finishes. New picks are unaffected (the
+  non-repeat ledger never redraws a used name).
 
 ## [0.6.0] — 2026-09-26
 

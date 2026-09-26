@@ -1,0 +1,48 @@
+# name mode 0.7.0 parallel race: 8 same-type (general-purpose) background dispatches in one message, 3 runs (runs 2+3 concurrent), CC 2.1.283 (Claude Code), 2026-09-26T18:28:45Z
+# tui_capture.sh, --plugin-dir, --setting-sources project,local, bypassPermissions, isolated QUEUE_DIR/LEDGER per run. Check: each b-*.json binding vs its meta.json (toolUseId, name) and the agent transcript's first line.
+# Result: 24/24 bound to their own dispatch (tuid == meta toolUseId, name == meta name, report opens with own [Name]); no mix-up alert shown; queues drained.
+
+## race1
+session fa2a57e4-8fd1-4afc-87a9-a3aa640f715f: 8 bindings
+  Cerf           live=False tuid==meta:True name==meta:True (Cerf) report:True | [Cerf]
+  AlKhwarizmi    live=False tuid==meta:True name==meta:True (AlKhwarizmi) report:True | [AlKhwarizmi]
+  Hopper         live=False tuid==meta:True name==meta:True (Hopper) report:True | [Hopper]
+  Matz           live=False tuid==meta:True name==meta:True (Matz) report:True | [Matz]
+  Dijkstra       live=False tuid==meta:True name==meta:True (Dijkstra) report:True | [Dijkstra]
+  Stallman       live=False tuid==meta:True name==meta:True (Stallman) report:True | [Stallman]
+  Perlis         live=False tuid==meta:True name==meta:True (Perlis) report:True | [Perlis]
+  AlanKay        live=False tuid==meta:True name==meta:True (AlanKay) report:True | [AlanKay]
+ALL OK
+
+## race2
+session 5c0ac73f-37d2-48bb-abb6-b80e08d79750: 8 bindings
+  Cerf           live=False tuid==meta:True name==meta:True (Cerf) report:True | [Cerf]
+  AlKhwarizmi    live=False tuid==meta:True name==meta:True (AlKhwarizmi) report:True | [AlKhwarizmi]
+  Hopper         live=False tuid==meta:True name==meta:True (Hopper) report:True | [Hopper]
+  Matz           live=False tuid==meta:True name==meta:True (Matz) report:True | [Matz]
+  Dijkstra       live=False tuid==meta:True name==meta:True (Dijkstra) report:True | [Dijkstra]
+  Stallman       live=False tuid==meta:True name==meta:True (Stallman) report:True | [Stallman]
+  Perlis         live=False tuid==meta:True name==meta:True (Perlis) report:True | [Perlis]
+  AlanKay        live=False tuid==meta:True name==meta:True (AlanKay) report:True | [AlanKay]
+ALL OK
+
+## race3
+session 5a858c38-eb1d-4b45-87d0-d9780bb18a6e: 8 bindings
+  Cerf           live=False tuid==meta:True name==meta:True (Cerf) report:True | [Cerf]
+  AlKhwarizmi    live=False tuid==meta:True name==meta:True (AlKhwarizmi) report:True | [AlKhwarizmi]
+  Hopper         live=False tuid==meta:True name==meta:True (Hopper) report:True | [Hopper]
+  Matz           live=False tuid==meta:True name==meta:True (Matz) report:True | [Matz]
+  Dijkstra       live=False tuid==meta:True name==meta:True (Dijkstra) report:True | [Dijkstra]
+  Stallman       live=False tuid==meta:True name==meta:True (Stallman) report:True | [Stallman]
+  Perlis         live=False tuid==meta:True name==meta:True (Perlis) report:True | [Perlis]
+  AlanKay        live=False tuid==meta:True name==meta:True (AlanKay) report:True | [AlanKay]
+ALL OK
+
+## race2 tree, frame f09 (tree shows 5 rows + '↓ 3 more')
+  ● main
+  ◯ Cerf         ⌨️  Cerf · Agent 1 sleep and echo                                                                                          4s · ↓ 21.8k tokens
+  ◯ AlKhwarizmi  ⌨️ AlKhwarizmi · Agent 2 sleep and echo                                                                                   3s · ↓ 21.8k tokens
+  ◯ Hopper       ⌨️ Hopper · Agent 3 sleep and echo                                                                                        2s · ↓ 21.8k tokens
+  ◯ Matz         ⌨️  Matz · Agent 4 sleep and echo                                                                                          2s · ↓ 21.9k tokens
+  ◯ Dijkstra     ⌨️  Dijkstra · Agent 5 sleep and echo                                                                                         1s · ↑ 50 tokens
+  ↓ 3 more

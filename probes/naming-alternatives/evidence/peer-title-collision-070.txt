@@ -1,0 +1,68 @@
+# name mode 0.7.0 peer-session-title collision, CC 2.1.283 (Claude Code), 2026-09-26T18:39:43Z
+# A throwaway peer session titled Cerf ('claude -n Cerf', not bypass mode) in tmux; probe sessions with --plugin-dir, --setting-sources project,local, bypassPermissions, fresh ledger (whose first code-category draw is Cerf).
+# Run 1 (haiku): unnamed dispatches. The pick skipped Cerf (live peer title) and drew AlKhwarizmi, Hopper. SendMessage(to: Cerf) went to the peer session, which held it for approval (permission-mode mismatch).
+# Run 2 (sonnet): model-supplied name 'Cerf' (the hook leaves it alone). ListAgents lists both 'Cerf [980c7d]' (subagent) and 'Cerf [1f71a9]' (peer). SendMessage(to: Cerf) resolved to the
+#   session's OWN subagent (result pins its id), with no error or disambiguation prompt; the subagent answered marker-7732; the peer never received it.
+# Conclusion: a collision is not ambiguous. CC prefers the in-session subagent, so the only cost is that the peer is reachable only by its [ref] while the subagent lives. Renaming the
+#   model's chosen name in the hook would be worse: the model's later SendMessage(to: Cerf) would then reach the peer session. No change needed.
+
+## run 1 (collide1) tool calls
+>> Agent {"description": "Run sleep 50 && echo a", "prompt": "Execute the bash command: sleep 50 && echo a. Report the complete output."}
+>> Agent {"description": "Run sleep 50 && echo b (Cerf)", "prompt": "Execute the bash command: sleep 50 && echo b. Report the complete output."}
+>> ListAgents {}
+<< ListAgents This session is collide1-00 [14db9f] — the name other sessions use to message it (it is not listed below; a message to it would be a message to yourself).
+
+Subagents (2):
+  AlKhwarizmi [37bbed]  ·  general-purpose  ·  running  ·  started 3s ago
+  Hopper [45a820]  ·  general-purpose  ·  running  ·  started 2s ago
+
+Peer sessions (46):
+  backyard-splat-b5 [8b7b29]  ·  interactive  ·  idle  ·  started 6d ago
+  handoff-2026-09-26-x6-stills-leg4-c4c8 [a59b26]  ·  bg  ·  idle  ·  started 1h ago
+  handoff-cockpit-p5-202609261122-9a97 [8c826a]  ·  bg  ·  shell  ·  started 7h ago
+  handoff-2026-09-26-x6-stills-leg2-c08f [0c77a2]  ·  bg  ·  idle  ·  started 6h ago
+  handoff-2026-09-26-x6-stills-leg3-15dd [ebdadb]  ·  bg  ·  idle  ·  started 6h ago
+  backyard-splat-3d [35db0b]  ·  interactive  ·  idle  ·  started 11h ago
+  handoff-2026-09-26-x6-stills-leg1-f01c [a828fd]  ·  bg  ·  idle  ·  started 6h ago
+  Cerf [1f71a9]  ·  interactive  ·  idle  ·  tmux ns-peer:@21.%21  ·  started 59s ago
+  open-brain-ee [34102a]  ·  interactive  ·  busy  ·  started 11h ago
+  Home furniture and route import [e2180e]  ·  bg  ·  idle  ·  started 18h ago
+  handoff-2026-09-26-x6-checklist-paired-ba46 [d0a77a]  ·  bg  ·  busy  ·  started 1m ago
+>> SendMessage {"to": "Cerf", "message": "Reply with the word marker-7731 and nothing else.", "type": "message", "recipient": "Cerf", "content": "Reply with the word marker-7731 and nothing else."}
+<< SendMessage {"success":true,"message":"“Reply with the word marker-7731 and nothing else.” → Cerf (another Claude session on this machine; it is also connected via Remote Control; queued there — a [Cross-session delivery notice] follows if that session holds it (different permission mode: its user must approve first) or refuses it)","msg_id":"de07e2e0-ce44-4a3b-bf25-01d5db43c464"}
+
+## run 2 (collide2) tool calls
+>> Agent {"subagent_type": "general-purpose", "name": "Cerf", "description": "collision probe", "prompt": "run the Bash command 'sleep 60 && echo b' and report it."}
+>> ListAgents {}
+<< ListAgents This session is collide2-ac [1229be] — the name other sessions use to message it (it is not listed below; a message to it would be a message to yourself).
+
+Subagents (1):
+  Cerf [980c7d]  ·  general-purpose  ·  running  ·  started 1s ago
+
+Peer sessions (46):
+  backyard-splat-b5 [8b7b29]  ·  interactive  ·  idle  ·  started 6d ago
+  handoff-2026-09-26-x6-stills-leg4-c4c8 [a59b26]  ·  bg  ·  idle  ·  started 1h ago
+  handoff-cockpit-p5-202609261122-9a97 [8c826a]  ·  bg  ·  idle  ·  started 7h ago
+  handoff-2026-09-26-x6-stills-leg2-c08f [0c77a2]  ·  bg  ·  idle  ·  started 6h ago
+  handoff-2026-09-26-x6-stills-leg3-15dd [ebdadb]  ·  bg  ·  idle  ·  started 6h ago
+  backyard-splat-3d [35db0b]  ·  interactive  ·  idle  ·  started 11h ago
+  handoff-2026-09-26-x6-stills-leg1-f01c [a828fd]  ·  bg  ·  idle  ·  started 6h ago
+  Cerf [1f71a9]  ·  interactive  ·  waiting  ·  tmux ns-peer:@21.%21  ·  started 2m ago
+  open-brain-ee [34102a]  ·  interactive  ·  busy  ·  started 11h ago
+  Home furniture and route import [e2180e]  ·  bg  ·  idle  ·  started 18h ago
+  handoff-2026-09-26-x6-checklist-paired-ba46 [d0a77a]  ·  bg  ·  idle  ·  started 3m ago
+>> SendMessage {"to": "Cerf", "message": "Reply with the word marker-7732 and nothing else.", "summary": "Collision probe message to Cerf", "type": "message", "recipient": "Cerf", "content": "Reply with the word marker-7732 and nothing else."}
+<< SendMessage {"success":true,"message":"Message queued for delivery to Cerf at its next tool round.","pin":{"id":"a8c598e571a77d03d","name":"Cerf","ref":"980c7d"}}
+
+## peer pane after both runs
+● Held peer message — from uds:/run/user/1000/cc-socks/442430.sock [verified pid 442430] (peer claims name: collide1-00); preview: «Reply with the word
+  marker-7731 and nothing else.» — not delivered to Claude (1 held). The sending session's permission mode class doesn't match this session's. Review it
+  below, or set "crossSessionInbound" to "accept".
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Held message from another session
+  Another Claude session sent a message: from uds:/run/user/1000/cc-socks/442430.sock [verified pid 442430] (peer claims name: collide1-00)
+  The sending session's permission mode class doesn't match this session's, so it wasn't delivered automatically.
+  Message body (this is what will be delivered):
+  «Reply with the word marker-7731 and nothing else.»
+  ❯ Deny — drop it and tell the sender it was declined
+    Deliver this message to Claude

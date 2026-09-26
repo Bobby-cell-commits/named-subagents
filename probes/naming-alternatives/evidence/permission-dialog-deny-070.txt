@@ -1,0 +1,46 @@
+# name mode 0.7.0 interactive permission-dialog denial, CC 2.1.283 (Claude Code), 2026-09-26T18:32:49Z
+# Scratch .claude/settings.local.json: permissions.ask [Agent, Task]; no bypassPermissions; --plugin-dir, --setting-sources project,local; haiku; tmux-driven.
+# Result: same as a hook deny. PreToolUse runs BEFORE the dialog (the dialog already shows the '⌨ Cerf ·' label; Cerf is queued). 'No' interrupts the turn and leaves Cerf queued.
+# The next same-type dispatch (17s later, inside the 30s queue TTL) Starts, pairs with the stale Cerf entry, and is told it is Cerf while the tree shows AlKhwarizmi.
+# SubagentStop sees meta.json toolUseId != Cerf's tuid, drops the stale entry, and the main Stop shows the mix-up alert. Live set ends clean (queue empty).
+# Run 2 (deny2) logged hook events: a dialog 'No' fires NO PermissionDenied, PostToolUseFailure or Stop — only PermissionRequest (no tool_use_id). So no hook can drop the entry at denial time.
+
+## run 1: dialog (frame a3)
+ Tool use
+   Agent(⌨ Cerf · Reply with pong)
+   │ Launch a new agent
+ Permission rule Agent requires confirmation for this tool.
+ /permissions to update rules
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for Agent commands in /tmp/claude-1000/-home-bogdan-Dev-open-brain/f1c88ecf-e8eb-4757-88db-73dd18e7fb55/scratchpad/pro…
+   3. No
+ Esc to cancel · Tab to amend
+
+## run 1: after 'No'
+● Agent(Reply with pong)
+  ⎿  Initializing…
+  ⎿  Interrupted · What should Claude do instead?
+✻ Worked for 2s · done 9:30 PM
+queue after 'No':
+{"role": "general-purpose", "ts": 1790447442.1317785, "tuid": "toolu_01YLT4A3Ryj3qu4q4wdkhTCd", "category": "code", "name": "Cerf", "own": true}
+
+## run 1: second dispatch approved (frame d30)
+❯ Now dispatch exactly one general-purpose agent with the Agent tool whose whole task is: reply with the single word ping. Use no tools in the agent.
+● Agent(Reply with ping)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+● Agent dispatched. It's working in the background and will notify when complete.
+  ⎿  Stop says: named-subagents: identity mix-up — the agent shown as AlKhwarizmi was told it is Cerf. Its [Name] report line will not match the tree.
+✻ Waiting for 1 background agent to finish
+● Agent "⌨️  AlKhwarizmi · Reply with ping" finished · 1s
+● Agent completed. Result: ping
+✻ Baked for 5s · done 9:31 PM
+queue at approval:
+{"role": "general-purpose", "ts": 1790447442.1317785, "tuid": "toolu_01YLT4A3Ryj3qu4q4wdkhTCd", "category": "code", "name": "Cerf", "own": true}
+{"role": "general-purpose", "ts": 1790447461.8394232, "tuid": "toolu_01UkUo3ez1MaQz2yYrqkPPhe", "category": "code", "name": "AlKhwarizmi", "own": true}
+bindings after:
+{"agents": {"a7e86e1b1c1236623": {"name": "Cerf", "live": false, "own": true, "category": "code", "tuid": "toolu_01YLT4A3Ryj3qu4q4wdkhTCd", "ts": 1790447463.5633056}}}
+
+## run 2: hook events logged around a dialog 'No'
+{"hook_event_name": "UserPromptSubmit", "tool_name": null, "tool_use_id": null, "reason": null, "error": null, "is_interrupt": null, "permission_decision": null}
+{"hook_event_name": "PermissionRequest", "tool_name": "Agent", "tool_use_id": null, "reason": null, "error": null, "is_interrupt": null, "permission_decision": null}

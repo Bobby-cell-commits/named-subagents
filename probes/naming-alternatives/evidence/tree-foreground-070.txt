@@ -1,0 +1,42 @@
+# name mode 0.7.0 FOREGROUND dispatch: 2 parallel general-purpose, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 + 'run_in_background: false' in the prompt, haiku, CC 2.1.283 (Claude Code), 2026-09-26T18:30:09Z
+# tui_capture.sh, --plugin-dir, --setting-sources project,local, bypassPermissions. Foreground confirmed by the inline 'Running 2 agents…' block (background runs show 'Backgrounded agent').
+# Result: the task tree's left column shows the names (Cerf, AlKhwarizmi); both reports opened with their own [Name]; bindings match meta.json. The inline foreground block shows the model's original description, not the '⌨️ Name · task' label.
+
+## frame f11 (running)
+● I'll dispatch 2 general-purpose agents in parallel, each running that Bash command.
+● Running 2 agents… (ctrl+o to expand)
+   ├ Run sleep and hostname command · 0 tool uses · 23.8k tokens
+   │ ⎿  Initializing…
+   └ Run sleep and hostname command · 0 tool uses · 23.9k tokens
+     ⎿  Initializing…
+· Pouncing… (10s · ↓ 960 tokens)
+❯ 
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← 1 agent · ↓ to manage                                                               /rc
+  ● main
+  ◯ Cerf         ⌨️ Cerf · Run sleep and hostname command                                                                                  3s · ↓ 24.0k tokens
+  ◯ AlKhwarizmi  ⌨️ AlKhwarizmi · Run sleep and hostname command                                                                           2s · ↓ 24.0k tokens
+
+## frame f30 (done)
+● 2 agents finished (ctrl+o to expand)
+   ├ Run sleep and hostname command · 1 tool use · 23.8k tokens
+   │ ⎿  Done
+   └ Run sleep and hostname command · 1 tool use · 23.9k tokens
+     ⎿  Done
+
+● Both agents completed successfully in parallel:
+
+  Agent 1 (Cerf):
+  - Executed sleep 12 && hostname
+  - Output: bogdan-System-Product-Name
+  - Duration: ~16.1 seconds
+
+  Agent 2 (AlKhwarizmi):
+  - Executed sleep 12 && hostname
+  - Output: bogdan-System-Product-Name
+  - Duration: ~16.3 seconds
+
+## pairing check
+session 4282f5f8-7859-49ec-a674-a68f54b73c20: 2 bindings
+  Cerf           live=False tuid==meta:True name==meta:True (Cerf) report:True | [Cerf]
+  AlKhwarizmi    live=False tuid==meta:True name==meta:True (AlKhwarizmi) report:True | [AlKhwarizmi]
+ALL OK

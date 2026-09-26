@@ -205,13 +205,22 @@ Notes, honestly stated:
   on 2.1.245 and 2.1.283).
 - **Live names are unique per session.** Two live agents with one name break
   `SendMessage` routing (the newest silently wins), so a pick skips every name a
-  live or just-dispatched agent holds, plus other local sessions' titles.
+  live or just-dispatched agent holds, plus other local sessions' titles. If the
+  model itself picks a name equal to a session title, `SendMessage` from this
+  session reaches its own subagent, not the other session (verified on 2.1.283).
 - A resumed agent keeps its name: `SubagentStart`/`SubagentStop` are keyed by
   agent ID, and a resume re-fires them without a new dispatch.
+- **A refused dispatch can cost the next agent its `[Name]` line.** Answering "No"
+  to an Agent permission prompt (or a hook deny) happens after `PreToolUse` has
+  queued a name, and no hook event reports the refusal. If a same-type dispatch
+  starts within 30 seconds, it is told the refused name while the tree shows its
+  own. When it finishes, `SubagentStop` corrects its record from Claude Code's
+  own record of the name, and the `Stop` hook shows a mix-up notice. Until then
+  the session holds the refused name as live instead of the agent's.
+- Foreground and background dispatches both show the name in the task tree; the
+  inline foreground "Running N agents" block shows the original description.
 - Name mode **replaces** the SubagentStart namer (`hook install --name` prunes it).
   Switch back any time with plain `hook install`.
-- Verified foreground rendering is still open: every captured run so far was a
-  background dispatch (the model chose background even when asked otherwise).
 
 Roster mode (0.5/0.6) generated callsign agent files instead. It is removed; use
 `named-subagents roster status` to list leftover files and `roster uninstall` to
