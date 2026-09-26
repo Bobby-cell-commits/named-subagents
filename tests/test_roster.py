@@ -159,10 +159,10 @@ with tempfile.TemporaryDirectory() as td:
     r = run_cli(["hook", "status", "--settings", sp], env_extra=ENV)
     check("human status names the mode", "name mode" in r.stdout, r.stdout)
 
-    r = run_cli(["hook", "install", "--settings", sp], env_extra=ENV)
+    r = run_cli(["hook", "install", "--context-only", "--settings", sp], env_extra=ENV)
     data = json.load(open(sp, encoding="utf-8"))
     hk = data["hooks"]
-    check("plain install switches back: no --name entries left",
+    check("--context-only install switches back: no --name entries left",
           not any("--name" in c for ev in hk for c in cmds(ev)), str(hk))
     r = run_cli(["hook", "install", "--name", "--settings", sp], env_extra=ENV)
     r = run_cli(["hook", "uninstall", "--settings", sp], env_extra=ENV)

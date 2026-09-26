@@ -367,21 +367,33 @@ with tempfile.TemporaryDirectory() as td:
     check("the mix-up is reported once, naming both", "mix-up" in msg and na_ in msg and nb_ in msg
           and msg.count("mix-up") == 1, msg)
 
-    section("hardening — Stop drops a denied dispatch's stale entry")
+    section("hardening — Stop puts back an entry it paired wrongly")
     s = "dn"
     nden = name_of(run(pre(session=s, description="denied", tool_use_id="tD"), env())[1])
     nok = name_of(run(pre(session=s, description="ok", tool_use_id="tO"), env())[1])
     run(start("dn1", session=s), env())             # pops the DENIED entry by FIFO
     write_meta("dn1", {"name": nok, "toolUseId": "tO"})
     run({**stop("dn1", session=s), "transcript_path": TX}, env())
-    check("the denied name and the agent's true name are both free", live(s) == set(),
-          f"live={live(s)} denied={nden} ok={nok}")
+    check("the wrongly taken entry is queued again (its dispatch may still start)",
+          live(s) == {nden}, f"live={live(s)} denied={nden} ok={nok}")
     rc, out = run(start("dn2", session=s), env())
-    check("the agent's own queue entry was removed (it cannot mispair a later Start)",
-          out is None, str(out))
+    ac = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    check("the agent's own entry is gone; the next Start pairs the put-back entry",
+          f"`[{nden}]`" in ac, str(out))
     run(start("dn1", session=s), env())             # SendMessage resume of the repaired agent
     check("a resume after the repair holds the agent's TRUE name, not the denied one",
-          live(s) == {nok}, f"live={live(s)} denied={nden} ok={nok}")
+          live(s) == {nok, nden}, f"live={live(s)} denied={nden} ok={nok}")
+
+    section("hardening — out-of-order Starts: the later agent still gets its identity")
+    s = "oo"
+    na_ = name_of(run(pre(session=s, description="a", tool_use_id="tOA"), env())[1])
+    nb_ = name_of(run(pre(session=s, description="b", tool_use_id="tOB"), env())[1])
+    run(start("ooB", session=s), env())             # B starts first and takes A's entry
+    write_meta("ooB", {"name": nb_, "toolUseId": "tOB"})
+    run({**stop("ooB", session=s), "transcript_path": TX}, env())
+    rc, out = run(start("ooA", session=s), env())
+    ac = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    check("A's Start pairs the entry B put back", f"`[{na_}]`" in ac, str(out))
 
     section("hardening — the repair holds for an agent that ran past the queue TTL")
     s = "dnl"
@@ -393,10 +405,14 @@ with tempfile.TemporaryDirectory() as td:
         aged = [dict(json.loads(ln), ts=json.loads(ln)["ts"] - 40) for ln in fh if ln.strip()]
     with open(qp, "w", encoding="utf-8") as fh:
         fh.writelines(json.dumps(e) + "\n" for e in aged)
+    bp = cli._bindings_path(s, QD)
+    bd = json.load(open(bp, encoding="utf-8"))
+    bd["agents"]["dnl1"]["qts"] -= 40
+    json.dump(bd, open(bp, "w", encoding="utf-8"))
     write_meta("dnl1", {"name": nok, "toolUseId": "tOL"})
     run({**stop("dnl1", session=s), "transcript_path": TX}, env())
     run(start("dnl1", session=s), env())            # SendMessage resume
-    check("a resume after a >30s run holds the TRUE name (from meta.json)",
+    check("a resume after a >30s run holds the TRUE name; the expired entry is not put back",
           live(s) == {nok}, f"live={live(s)} denied={nden} ok={nok}")
 
     section("hardening — a model-supplied name that duplicates a live one is reported")
@@ -433,6 +449,206 @@ with tempfile.TemporaryDirectory() as td:
     os.utime(ages, (1, 1))
     run(pre(session="gc"), env())
     check("stale per-session binding files are garbage-collected", not os.path.exists(ages))
+
+    def alerts(session):
+        return ((run({"hook_event_name": "Stop", "session_id": session}, env())[1] or {})
+                .get("systemMessage") or "")
+
+    def age_queue(session, secs):
+        qp = cli._queue_path(session, QD)
+        with open(qp, encoding="utf-8") as fh:
+            aged = [dict(json.loads(ln), ts=json.loads(ln)["ts"] - secs) for ln in fh if ln.strip()]
+        with open(qp, "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(e) + "\n" for e in aged)
+
+    section("H1 — an agent Start cannot pair is alerted at its Stop")
+    s = "h1u1"                                      # permission prompt answered after 45 s
+    nm = name_of(run(pre(session=s, tool_use_id="tU1"), env())[1])
+    age_queue(s, 45)
+    rc, out = run(start("u1a", session=s), env())
+    check("an expired entry: Start injects nothing (and does not alert yet)", out is None, str(out))
+    write_meta("u1a", {"name": nm, "toolUseId": "tU1"})
+    run({**stop("u1a", session=s), "transcript_path": TX}, env())
+    msg = alerts(s)
+    check("expired entry -> 'untracked agent' alert naming it", "untracked agent" in msg and nm in msg, msg)
+
+    s = "h1u2"                                      # agent_type differs from subagent_type
+    nm = name_of(run(pre(session=s, subagent_type="research-subagent", tool_use_id="tU2"), env())[1])
+    run(start("u2a", session=s, agent_type="plug:research-subagent"), env())
+    write_meta("u2a", {"name": nm, "toolUseId": "tU2"})
+    run({**stop("u2a", session=s), "transcript_path": TX}, env())
+    check("type mismatch -> untracked alert", "untracked agent" in alerts(s))
+    check("type mismatch -> its queue entry is dropped (cannot mispair a sibling)",
+          live(s) == set(), f"{live(s)} nm={nm} q={cli._read_queue(cli._queue_path(s, QD))} "
+          f"b={cli._read_bindings(cli._bindings_path(s, QD))}")
+
+    s = "h1u3"                                      # Start payload without agent_id
+    nm = name_of(run(pre(session=s, tool_use_id="tU3"), env())[1])
+    ev = start("u3a", session=s)
+    ev.pop("agent_id")
+    run(ev, env())
+    write_meta("u3a", {"name": nm, "toolUseId": "tU3"})
+    run({**stop("u3a", session=s), "transcript_path": TX}, env())
+    check("no agent_id on Start -> untracked alert at Stop", "untracked agent" in alerts(s))
+
+    s = "h1u4"                                      # meta.json already on disk at the first Start
+    na_ = name_of(run(pre(session=s, description="a", tool_use_id="tU4a"), env())[1])
+    nb_ = name_of(run(pre(session=s, description="b", tool_use_id="tU4b"), env())[1])
+    write_meta("u4b", {"name": nb_, "toolUseId": "tU4b"})
+    rc, out = run(start("u4b", session=s), env())
+    ac = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    check("early meta.json: Start pairs the exact entry by toolUseId", f"`[{nb_}]`" in ac, str(out))
+    rc, out = run(start("u4a", session=s), env())
+    ac = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    check("early meta.json: the sibling keeps its own entry", f"`[{na_}]`" in ac, str(out))
+
+    s = "h1u5"                                      # forked skill: no Agent dispatch, no toolUseId
+    run(start("u5a", session=s), env())
+    write_meta("u5a", {"agentType": "general-purpose", "name": "code-review"})
+    run({**stop("u5a", session=s), "transcript_path": TX}, env())
+    check("a forked skill (no toolUseId) raises no alert", alerts(s) == "", alerts(s))
+
+    s = "h1u6"                                      # CLI-named dispatch: nothing to verify
+    run(pre(session=s, prompt="You are X, one of several " + SIG + " go", tool_use_id="tU6"), env())
+    run(start("u6a", session=s), env())
+    write_meta("u6a", {"agentType": "general-purpose", "toolUseId": "tU6"})
+    run({**stop("u6a", session=s), "transcript_path": TX}, env())
+    check("a CLI-named dispatch raises no false alert", alerts(s) == "", alerts(s))
+
+    section("H2 — a hook exception is recorded, not swallowed")
+    import fcntl
+    s = "h2"
+    qp = cli._queue_path(s, QD)
+    fd = os.open(qp + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)                  # break it: a wedged peer holds the queue lock
+    try:
+        rc, out = run(pre(session=s), env())
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    check("still fails open: exit 0, nothing on stdout", rc == 0 and out is None, str(out))
+    msg = alerts(s)
+    check("the failure is shown at the main Stop, with its type",
+          "PreToolUse hook failed" in msg and "TimeoutError" in msg, msg)
+
+    run(pre(session=s), env())                      # fails again, then: lock still wedged at Stop
+    fd = os.open(qp + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    cli._record_alert(s, QD, "named-subagents: probe alert")
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        msg = alerts(s)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    check("a wedged queue lock does not hide the main Stop's alerts", "probe alert" in msg, msg)
+
+    section("M1 — in-hook lock waits fit inside the hook timeout")
+    hj = json.load(open(os.path.join(ROOT, "hooks", "hooks.json"), encoding="utf-8"))["hooks"]
+    tmo = min(h.get("timeout", 60) for b in hj["PreToolUse"] for h in b["hooks"])
+    check("queue + ledger lock waits stay well under the PreToolUse timeout",
+          cli._QUEUE_LOCK_WAIT + cli._LEDGER_LOCK_WAIT <= tmo / 2,
+          f"{cli._QUEUE_LOCK_WAIT}+{cli._LEDGER_LOCK_WAIT} vs {tmo}")
+    import time as _t
+    e = env(fresh_ledger=True)
+    lfd = os.open(e["NAMED_SUBAGENTS_LEDGER"] + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(lfd, fcntl.LOCK_EX)                 # break it: another session holds the ledger
+    try:
+        t0 = _t.monotonic()
+        rc, out = run(pre(session="m1"), e)
+        took = _t.monotonic() - t0
+    finally:
+        fcntl.flock(lfd, fcntl.LOCK_UN)
+        os.close(lfd)
+    check("a held ledger lock gives up within the budget", rc == 0 and took < 6, f"{took:.1f}s")
+    check("...and the dispatch's failed pick is alerted", "could not pick a name" in alerts("m1"))
+
+    section("M2 — a corrupt ledger is kept aside and alerted")
+    e = env(fresh_ledger=True)
+    with open(e["NAMED_SUBAGENTS_LEDGER"], "w", encoding="utf-8") as fh:
+        fh.write('{"explore": {"used": ["Ada"')    # break it: a truncated write
+    rc, out = run(pre(session="m2"), e)
+    backups = [f for f in os.listdir(td) if f.startswith(os.path.basename(e["NAMED_SUBAGENTS_LEDGER"]) + ".corrupt-")]
+    check("the corrupt file is copied aside before the reset", len(backups) == 1, str(backups))
+    check("the copy keeps the original bytes",
+          backups and open(os.path.join(td, backups[0]), encoding="utf-8").read().startswith('{"explore"'))
+    check("the dispatch is still named", name_of(out) is not None, str(out))
+    msg = alerts("m2")
+    check("the reset is shown at the main Stop, with the backup path",
+          "ledger" in msg and ".corrupt-" in msg, msg)
+
+    from named_subagents import Ledger
+    ro = os.path.join(td, "led-ro.json")
+    with open(ro, "w", encoding="utf-8") as fh:
+        fh.write("{broken")
+    Ledger(ro)
+    Ledger(ro)
+    check("reading a corrupt ledger without saving makes no copies",
+          not [f for f in os.listdir(td) if f.startswith("led-ro.json.corrupt-")])
+
+    section("L5 — one ledger save per draw")
+    from named_subagents import Ledger
+    calls = [0]
+    orig_save = Ledger.save
+
+    def counting_save(self):
+        calls[0] += 1
+        return orig_save(self)
+
+    Ledger.save = counting_save
+    try:
+        cli._name_pre(pre(session="l5"), QD, os.path.join(td, "led-l5.json"))
+    finally:
+        Ledger.save = orig_save
+    check("PreToolUse saves the ledger once", calls[0] == 1, str(calls[0]))
+
+    section("context-only mode — deprecation notice")
+    ce = dict(os.environ, **env())
+    ev = {"hook_event_name": "SubagentStart", "session_id": "dep", "agent_type": "Explore"}
+    r = subprocess.run(CLI + ["hook", "run"], cwd=ROOT, input=json.dumps(ev),
+                       capture_output=True, text=True, env=ce)
+    check("context-only SubagentStart still names the agent", "additionalContext" in r.stdout, r.stdout)
+    bad_q = dict(ce, NAMED_SUBAGENTS_QUEUE_DIR="/proc/named-subagents-nope")
+    r2 = subprocess.run(CLI + ["hook", "run"], cwd=ROOT, input=json.dumps(ev),
+                        capture_output=True, text=True, env=bad_q)
+    check("an unwritable state dir never costs the agent its name (the notice is optional)",
+          "additionalContext" in r2.stdout, r2.stdout + r2.stderr)
+    r = subprocess.run(CLI + ["hook", "run"], cwd=ROOT,
+                       input=json.dumps({"hook_event_name": "Stop", "session_id": "dep"}),
+                       capture_output=True, text=True, env=ce)
+    out = json.loads(r.stdout) if r.stdout.strip() else {}
+    check("a context-only Stop shows the deprecation notice pointing to --name",
+          "deprecated" in out.get("systemMessage", "") and "hook install --name" in out.get("systemMessage", ""),
+          r.stdout)
+
+    section("H3 — install defaults to name mode; doctor sees the plugin")
+    home = os.path.join(td, "h3home")
+    os.makedirs(os.path.join(home, ".claude"))
+    he = dict(os.environ, HOME=home, **env())
+    he.pop("CLAUDE_PLUGIN_ROOT", None)
+    sp = os.path.join(home, ".claude", "settings.json")
+
+    def doctor_line():
+        r = subprocess.run(CLI + ["doctor"], cwd=ROOT, capture_output=True, text=True, env=he)
+        return r.returncode, next((ln for ln in r.stdout.splitlines() if "hook-install" in ln), r.stdout)
+
+    json.dump({"enabledPlugins": {"named-subagents@named-subagents": True}}, open(sp, "w"))
+    rc, ln = doctor_line()
+    check("plugin only: doctor reports 'plugin active', no install advice",
+          "plugin active" in ln and "hook install" not in ln, ln)
+    subprocess.run(CLI + ["hook", "install", "--context-only"], cwd=ROOT, capture_output=True, env=he)
+    rc, ln = doctor_line()
+    check("plugin + context-only settings hooks: doctor FAILs and says to uninstall",
+          "FAIL" in ln and "hook uninstall" in ln and rc != 0, ln)
+    subprocess.run(CLI + ["hook", "install"], cwd=ROOT, capture_output=True, env=he)
+    hk = json.load(open(sp, encoding="utf-8"))["hooks"]
+    check("plain `hook install` registers name mode on all four events",
+          all(any("hook run --name" in h["command"] for b in hk.get(ev_, []) for h in b["hooks"])
+              for ev_ in ("PreToolUse", "SubagentStart", "SubagentStop", "Stop")), str(hk))
+    json.dump({}, open(sp, "w"))
+    rc, ln = doctor_line()
+    check("no plugin, no install: doctor advises `hook install --name`", "hook install --name" in ln, ln)
 
     section("plugin hooks.json — name mode only")
     hj = json.load(open(os.path.join(ROOT, "hooks", "hooks.json"), encoding="utf-8"))["hooks"]

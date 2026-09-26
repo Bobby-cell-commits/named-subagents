@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import tempfile
 import time
@@ -511,12 +512,16 @@ class Ledger:
     survive a v2 writer.
 
     path=None -> ephemeral (in-memory only; save() is a no-op). A missing or
-    corrupt file starts empty rather than crashing.
+    corrupt file starts empty rather than crashing; a corrupt one is first copied
+    to `<path>.corrupt-<timestamp>` (named in `corrupt_backup`, and `corrupt` is
+    set) so the next save cannot erase the history it held.
     """
 
     def __init__(self, path: Optional[str] = None):
         self.path = path
         self.state: Dict[str, object] = {}
+        self.corrupt = False
+        self.corrupt_backup: Optional[str] = None
         self._load()
 
     def _load(self) -> None:
@@ -533,9 +538,26 @@ class Ledger:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 loaded = json.load(fh, parse_constant=_reject_constant)
-            self.state = loaded if isinstance(loaded, dict) else {}
+            if not isinstance(loaded, dict):
+                raise ValueError("ledger is not a JSON object")
+            self.state = loaded
+            self.corrupt = False
         except (ValueError, OSError):
             self.state = {}  # corrupt/unreadable -> fresh, never crash
+            self.corrupt = True
+
+    def _keep_corrupt(self) -> None:
+        """Before a save replaces an unreadable ledger, copy it aside once: the save
+        would otherwise erase every category's used/retired/generation history.
+        Readers that never save leave the file (and the disk) alone."""
+        if self.corrupt_backup or not os.path.exists(self.path):
+            return
+        dst = f"{self.path}.corrupt-{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}"
+        try:
+            shutil.copyfile(self.path, dst)
+        except OSError:
+            return          # `corrupt` stays set; callers can still report it
+        self.corrupt_backup = dst
 
     # --- internal ----------------------------------------------------------- #
     def _rec(self, category: str) -> dict:
@@ -634,6 +656,8 @@ class Ledger:
     def save(self) -> None:
         if not self.path:
             return
+        if self.corrupt:
+            self._keep_corrupt()
         data = json.dumps(self.state, indent=2, ensure_ascii=False)
         abspath = os.path.abspath(self.path)
         d = os.path.dirname(abspath) or "."

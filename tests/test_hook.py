@@ -424,7 +424,7 @@ with tempfile.TemporaryDirectory() as d:
 section("hook install / status / uninstall")
 with tempfile.TemporaryDirectory() as d:
     sp = os.path.join(d, "settings.json")   # absent to start
-    r = run_hook("", "install", "--settings", sp)
+    r = run_hook("", "install", "--context-only", "--settings", sp)
     check("install into absent settings -> exit 0", r.returncode == 0, r.stderr[:300])
     check("install created the settings file", os.path.exists(sp))
     data = json.load(open(sp))
@@ -448,7 +448,7 @@ with tempfile.TemporaryDirectory() as d:
           r.stdout[:200])
 
     # idempotent re-install (existing file -> writes a backup, no duplicate)
-    r = run_hook("", "install", "--settings", sp)
+    r = run_hook("", "install", "--context-only", "--settings", sp)
     data2 = json.load(open(sp))
     ours2 = [m for m in data2["hooks"]["SubagentStart"]
              if any(MARKER in h.get("command", "") for h in m.get("hooks", []))]
@@ -469,7 +469,7 @@ with tempfile.TemporaryDirectory() as d:
         {"matcher": "Agent|Task", "hooks": [{"type": "command",
          "command": f"python -m named_subagents hook run --managed-by {MARKER}"}]}]}},
         open(sp, "w"))
-    r = run_hook("", "install", "--settings", sp)
+    r = run_hook("", "install", "--context-only", "--settings", sp)
     check("install over a legacy PreToolUse entry -> exit 0", r.returncode == 0, r.stderr[:300])
     data = json.load(open(sp))
     pre = data.get("hooks", {}).get("PreToolUse", [])
@@ -491,7 +491,7 @@ with tempfile.TemporaryDirectory() as d:
     json.dump({"hooks": {"SubagentStart": [
         {"matcher": "*", "hooks": [{"type": "command", "command": "echo unrelated"}]}]},
         "permissions": {"allow": ["Bash"]}}, open(sp, "w"))
-    r = run_hook("", "install", "--settings", sp)
+    r = run_hook("", "install", "--context-only", "--settings", sp)
     check("install into populated settings -> exit 0", r.returncode == 0, r.stderr[:300])
     data = json.load(open(sp))
     ss = data["hooks"]["SubagentStart"]
@@ -517,7 +517,7 @@ section("hook install — refuses to clobber malformed settings")
 with tempfile.TemporaryDirectory() as d:
     sp = os.path.join(d, "settings.json")
     open(sp, "w").write("{ this is not valid json ")
-    r = run_hook("", "install", "--settings", sp)
+    r = run_hook("", "install", "--context-only", "--settings", sp)
     check("install on malformed JSON -> non-zero exit", r.returncode != 0, r.stdout[:200])
     check("install did NOT modify the malformed file",
           open(sp).read() == "{ this is not valid json ")
@@ -556,7 +556,7 @@ with tempfile.TemporaryDirectory() as _home:
 # the capture entry lives under PreToolUse but carries --capture, not the mutate path
 with tempfile.TemporaryDirectory() as _home:
     sp = os.path.join(_home, ".claude", "settings.json")
-    run_hook("", "install", "--settings", sp)
+    run_hook("", "install", "--context-only", "--settings", sp)
     r = run_cli("doctor", env_extra={"HOME": _home})
     check("doctor on a clean v0.4.3 install -> no false legacy warning",
           "legacy" not in r.stdout, r.stdout[-400:])

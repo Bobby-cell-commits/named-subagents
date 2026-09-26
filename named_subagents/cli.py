@@ -392,17 +392,25 @@ def _doctor_checks(args):
                f"alerts there) — re-run `hook install --name`" if missing else "")
             + ("  ⚠ auto-namer entries also present — re-run `hook install --name`"
                if (hooked or capture) else ""))
-    elif hooked:
-        add("INFO", "hook-install",
-            f"registered (SubagentStart{' + task capture' if capture else ''}) in {sp}"
-            + ("" if capture else "  ⚠ task capture not registered — re-run `hook install` for task theming")
-            + ("  ⚠ legacy PreToolUse entry also present — re-run `hook install` to migrate" if legacy else ""))
-    elif legacy:
-        add("INFO", "hook-install",
-            f"⚠ only a legacy PreToolUse entry in {sp} (clobber-prone) — re-run `hook install` to migrate to SubagentStart")
+    elif hooked or legacy:
+        where = ("SubagentStart" + (" + task capture" if capture else "")) if hooked \
+            else "only a legacy PreToolUse entry"
+        if _plugin_active():
+            # The plugin stands down on every event our settings.json hooks cover, so
+            # this install silently turns off the names the plugin would show.
+            add("FAIL", "hook-install",
+                f"context-only hooks ({where}) in {sp} override the named-subagents plugin: "
+                f"the task tree shows no names. Run `named-subagents hook uninstall` "
+                f"(the plugin then runs name mode on its own)")
+        else:
+            add("INFO", "hook-install",
+                f"context-only mode ({where}) in {sp} — deprecated, removal planned for "
+                f"0.8; `named-subagents hook install --name` switches to name mode")
+    elif _plugin_active():
+        add("INFO", "hook-install", "plugin active (name mode); no settings.json install needed")
     else:
         add("INFO", "hook-install",
-            "not installed (run `named-subagents hook install` to enable auto-naming)")
+            "not installed (run `named-subagents hook install --name`, or enable the plugin)")
     if os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
         # Kill switch is a documented, legitimate state — don't FAIL (or flip the exit code).
         add("INFO", "hook-selftest", "skipped — disabled via NAMED_SUBAGENTS_HOOK_DISABLE")
@@ -610,6 +618,11 @@ def _hook_registry():
 # ROLE-MATCHING entry. Returning nothing from the PRE hook keeps it immune to the
 # multi-hook updatedInput clobber (claude-code#15897/#39814).
 _QUEUE_TTL_SECONDS = 30.0     # entries older than this are orphans (dispatch never started)
+# Lock waits inside a hook. hooks.json kills a hook at 10s, and PreToolUse can wait
+# for both locks in turn (the ledger lock is taken while the queue lock is held), so
+# the sum stays well under that: a killed PreToolUse queues nothing and alerts nothing.
+_QUEUE_LOCK_WAIT = 3.0
+_LEDGER_LOCK_WAIT = 2.0
 
 
 def _hook_queue_dir() -> str:
@@ -636,8 +649,9 @@ class _queue_lock:
     `<queue>.lock` sidecar (same idiom as Ledger.lock). Platforms without fcntl
     degrade to lockless (matches the JS port's documented behavior)."""
 
-    def __init__(self, qpath: str):
+    def __init__(self, qpath: str, timeout: float = _QUEUE_LOCK_WAIT):
         self._lock_path = qpath + ".lock"
+        self._timeout = timeout
         self._fd = None
 
     def __enter__(self):
@@ -645,7 +659,7 @@ class _queue_lock:
             import fcntl
         except ImportError:
             return self
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + self._timeout
         self._fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         while True:
             try:
@@ -762,10 +776,9 @@ def _hook_mutate(event, ledger_path=None, avoid=None):
     led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
     if led.path:
         os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
-    with led.lock(timeout=10):             # flock (bounded): concurrent fan-out can't
-        nickname = allocate(cat, 1, reg, ledger=led,      # collide; a wedged peer
+    with led.lock(timeout=_LEDGER_LOCK_WAIT):   # flock (bounded): concurrent fan-out
+        nickname = allocate(cat, 1, reg, ledger=led,      # can't collide; a wedged peer
                             avoid=avoid)[0]               # degrades to fail-open, not a hang
-        led.save()
 
     emoji, theme = reg.emoji(cat), reg.theme(cat)
     bio = reg.bio(cat, _strip_gen(nickname)) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
@@ -809,9 +822,8 @@ def _hook_subagent_start(event, ledger_path=None, queue_dir=None):
     led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
     if led.path:
         os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
-    with led.lock(timeout=10):
+    with led.lock(timeout=_LEDGER_LOCK_WAIT):
         nickname = allocate(cat, 1, reg, ledger=led)[0]
-        led.save()
 
     theme = reg.theme(cat)
     bio = reg.bio(cat, _strip_gen(nickname)) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
@@ -1050,10 +1062,15 @@ def _name_pre(event, queue_dir=None, ledger_path=None):
                 led = Ledger(ledger_path if ledger_path is not None else _hook_ledger_path())
                 if led.path:
                     os.makedirs(os.path.dirname(os.path.abspath(led.path)) or ".", exist_ok=True)
-                with led.lock(timeout=10):
+                with led.lock(timeout=_LEDGER_LOCK_WAIT):
                     drawn = allocate(entry["category"], 1, reg, ledger=led, avoid=avoid)[0]
-                    led.save()
                 entry.update(name=_strip_gen(drawn), own=True)
+                if led.corrupt:
+                    _record_alert(sid, queue_dir, (
+                        f"named-subagents: the name ledger {led.path} was unreadable and "
+                        f"has been reset, so earlier names can repeat"
+                        + (f"; the old file is kept at {led.corrupt_backup}."
+                           if led.corrupt_backup else " (the old file could not be copied).")))
             except Exception as e:  # noqa: BLE001 — recorded + shown; the dispatch runs unnamed
                 # Queue a placeholder anyway: SubagentStart fires for this dispatch
                 # regardless, and a missing entry would shift every later sibling's
@@ -1081,7 +1098,13 @@ def _name_start(event, queue_dir=None):
     """SubagentStart: bind the oldest queued dispatch of this role to agent_id and
     inject the identity block (`[Name]` report line), which the roster agent files
     used to carry. A known agent_id is a SendMessage resume: mark it live again,
-    inject nothing, and leave the queue alone (its entries belong to siblings)."""
+    inject nothing, and leave the queue alone (its entries belong to siblings).
+
+    Every Start leaves a binding, so SubagentStop can tell a paired agent from one
+    Start could not pair. A Start with no queued dispatch of its role records an
+    `unpaired` binding and stays quiet: forked skills (e.g. /code-review) start
+    subagents without an Agent dispatch, so only SubagentStop, which can read
+    meta.json's toolUseId, can tell a lost dispatch from one that never existed."""
     if not isinstance(event, dict):
         return None
     aid = event.get("agent_id")
@@ -1098,32 +1121,42 @@ def _name_start(event, queue_dir=None):
             bindings[aid].update(live=True, ts=time.time())
             _write_json_atomic(bpath, {"agents": bindings})
             return None
+        queue = _read_queue(qpath)
         # CC writes meta.json just after an agent's FIRST SubagentStart, so a Start
-        # that finds it is a resume of an agent we never bound (CLI-named, pre-dates
-        # the binding file, or GC'd): take its name from meta.json, never the queue.
+        # that finds it is normally a resume of an agent we never bound (CLI-named,
+        # pre-dates the binding file, or GC'd): take its name from meta.json. If its
+        # toolUseId is still queued, this is a first Start after all (CC wrote
+        # meta.json early): pair that exact entry, never a FIFO sibling's.
         mp = _meta_path(event, aid)
         if mp and os.path.isfile(mp):
             meta = _read_json(mp, {})
             nm, mt = meta.get("name"), meta.get("toolUseId")
-            if isinstance(nm, str) and nm:
+            mt = mt if isinstance(mt, str) and mt else None
+            idx = next((i for i, e in enumerate(queue) if mt and e.get("tuid") == mt), None)
+            if idx is None:
+                nm = nm if isinstance(nm, str) and nm else None
                 bindings[aid] = {"name": nm, "live": True, "own": False, "category": None,
-                                 "tuid": mt if isinstance(mt, str) else None,
-                                 "ts": time.time()}
+                                 "tuid": mt, "skip": nm is None, "ts": time.time()}
                 _write_json_atomic(bpath, {"agents": bindings})
-            return None
-        queue = _read_queue(qpath)
-        idx = next((i for i, e in enumerate(queue) if e.get("role") == atype), None)
+                return None
+        else:
+            idx = next((i for i, e in enumerate(queue) if e.get("role") == atype), None)
         if idx is None:
+            bindings[aid] = {"name": None, "live": True, "unpaired": True, "role": atype,
+                             "ts": time.time()}
+            _write_json_atomic(bpath, {"agents": bindings})
             return None
         entry = queue.pop(idx)
         _write_queue(qpath, queue)
-        if entry.get("skip") or not isinstance(entry.get("name"), str):
-            return None
-        bindings[aid] = {"name": entry["name"], "live": True, "own": bool(entry.get("own")),
+        named = not entry.get("skip") and isinstance(entry.get("name"), str)
+        bindings[aid] = {"name": entry["name"] if named else None, "live": True,
+                         "own": bool(entry.get("own")) and named,
+                         "requeued": bool(entry.get("requeued")),
                          "category": entry.get("category"), "tuid": entry.get("tuid"),
+                         "skip": not named, "role": entry.get("role"), "qts": entry.get("ts"),
                          "ts": time.time()}
         _write_json_atomic(bpath, {"agents": bindings})
-    if not entry.get("own"):
+    if not named or not entry.get("own"):
         return None
     reg, _cfg = _hook_registry()
     cat = entry.get("category")
@@ -1151,24 +1184,29 @@ def _alerts_path(session_id, queue_dir=None) -> str:
 
 
 def _record_alert(session_id, queue_dir, msg) -> None:
-    """Queue an alert for the main agent's Stop hook to show (_name_main_stop)."""
+    """Queue an alert for the main agent's Stop hook to show (_name_main_stop).
+    Append-only and lock-free, so it also works when the queue lock is the fault."""
+    os.makedirs(queue_dir or _hook_queue_dir(), exist_ok=True)
     with open(_alerts_path(session_id, queue_dir), "a", encoding="utf-8") as fh:
         fh.write(json.dumps({"msg": msg, "ts": time.time()}, ensure_ascii=False) + "\n")
 
 
 def _name_stop(event, queue_dir=None):
-    """SubagentStop: release the agent's name by agent_id (a Stop for an agent that
-    is not live — unknown, or already released — is a no-op), then check it
-    against meta.json, whose `toolUseId` is the dispatch's PreToolUse
-    `tool_use_id`: the one exact key CC exposes (SubagentStart has none).
+    """SubagentStop: release the agent's name by agent_id (a Stop for an agent
+    already released is a no-op), then check it against meta.json, whose
+    `toolUseId` is the dispatch's PreToolUse `tool_use_id`: the one exact key CC
+    exposes (SubagentStart has none).
 
+    - No binding, or an `unpaired` one, while meta.json carries a toolUseId:
+      Start lost this Agent dispatch. An "untracked agent" alert is recorded and
+      its queue entry dropped. (No toolUseId = not an Agent dispatch: quiet.)
     - toolUseId differs from the bound dispatch: Start paired the wrong queue
       entry. If another live agent holds that dispatch, the two swapped; swap
-      their records back. Otherwise the bound entry was a dispatch that never
-      started (denied/errored); the record takes this agent's true identity
-      (meta.json's name, then its queued entry), and that entry leaves the
-      queue so it cannot mispair a later Start. Either way the live set ends up correct, and
-      a mix-up alert is recorded (the agent was told the wrong [Name]).
+      their records back. Otherwise the bound entry is a dispatch that has not
+      started (or never will: denied/errored). It goes back on the queue for its
+      own Start; the record takes this agent's true identity (meta.json's name,
+      then its queued entry), and that entry leaves the queue so it cannot
+      mispair a later Start. Either way a mix-up alert is recorded.
     - Otherwise: meta.json missing, or `name` missing/different, is recorded.
 
     Alerts are RECORDED, not emitted: CC 2.1.283 drops a SubagentStop
@@ -1181,39 +1219,85 @@ def _name_stop(event, queue_dir=None):
         return None
     sid = event.get("session_id")
     qpath, bpath = _queue_path(sid, queue_dir), _bindings_path(sid, queue_dir)
-    if not os.path.exists(bpath):
-        return None
+    os.makedirs(os.path.dirname(qpath) or ".", exist_ok=True)
     with _queue_lock(qpath):
         bindings = _read_bindings(bpath)
         rec = bindings.get(aid)
-        if not rec or not rec.get("live"):
-            return None
-        told = rec.get("name")
+        if rec is not None and not rec.get("live"):
+            return None                   # a repeated or stray Stop
+        told = (rec or {}).get("name")
         mp = _meta_path(event, aid)
         meta = _read_json(mp, {}) if mp and os.path.isfile(mp) else None
         got = (meta or {}).get("name")
         got = got if isinstance(got, str) and got else None
         mt = (meta or {}).get("toolUseId")
+        mt = mt if isinstance(mt, str) and mt else None
         alert = None
-        if isinstance(mt, str) and mt and rec.get("tuid") and mt != rec.get("tuid"):
+        if rec is None or rec.get("unpaired"):
+            # Start never paired this agent with its dispatch (a queue entry that
+            # expired while a permission prompt was open, an agent_type that differs
+            # from subagent_type, a Start payload without agent_id, ...). Without a
+            # toolUseId it was not an Agent dispatch (a forked skill): nothing to check.
+            if mt is None:
+                if rec is None:
+                    return None
+            else:
+                queue = _read_queue(qpath)
+                keep = [e for e in queue if e.get("tuid") != mt]
+                if len(keep) != len(queue):
+                    _write_queue(qpath, keep)     # its entry must not mispair a later Start
+                alert = (f"named-subagents: untracked agent {got or aid} — SubagentStart could "
+                         f"not pair it with its dispatch, so it never got its [Name] identity "
+                         f"and its name was not held against reuse. A permission prompt "
+                         f"answered more than {int(_QUEUE_TTL_SECONDS)}s after the dispatch "
+                         f"does this. If every agent shows it, the hook setup is broken "
+                         f"(SubagentStart is not running name mode): run "
+                         f"`named-subagents doctor`.")
+            rec = bindings[aid] = {"name": got if mt else None, "own": False, "category": None,
+                                   "tuid": mt, "skip": not (got and mt)}
+        elif mt and rec.get("tuid") and mt != rec.get("tuid"):
             other = next((r for k, r in bindings.items()
                           if k != aid and r.get("live") and r.get("tuid") == mt), None)
             if other is not None:
-                keys = ("name", "own", "category", "tuid")
+                keys = ("name", "own", "category", "tuid", "skip", "role", "qts")
                 mine = {k: rec.get(k) for k in keys}
                 rec.update({k: other.get(k) for k in keys})
                 other.update(mine)
             else:
+                # The bound entry was a dispatch that has not started (or never will:
+                # denied/errored). Put it back so its own Start can still pair it;
+                # a denied one expires with the queue TTL.
                 queue = _read_queue(qpath)
+                taken = None
+                qts = rec.get("qts")
+                if (rec.get("role") and isinstance(qts, (int, float)) and not rec.get("requeued")
+                        and time.time() - qts <= _QUEUE_TTL_SECONDS):
+                    # Put back once: a denied dispatch's entry would otherwise be
+                    # popped (and repaired) again by every same-role Start in its TTL.
+                    taken = {"role": rec["role"], "ts": qts, "tuid": rec.get("tuid"),
+                             "requeued": True}
+                    if told:
+                        taken.update(name=told, own=bool(rec.get("own")),
+                                     category=rec.get("category"))
+                    else:
+                        taken["skip"] = True
                 own = next((e for e in queue if e.get("tuid") == mt), {})
                 # Adopt the agent's true identity (a resume reads it). meta.json's
                 # name first: the queued entry expires after _QUEUE_TTL_SECONDS.
-                rec.update(name=got or own.get("name"), own=bool(own.get("own")),
-                           category=own.get("category"), tuid=mt)
-                _write_queue(qpath, [e for e in queue if e.get("tuid") != mt])
+                nm = got or own.get("name")
+                rec.update(name=nm, own=bool(own.get("own")), category=own.get("category"),
+                           tuid=mt, skip=not nm, role=own.get("role"), qts=own.get("ts"))
+                queue = [e for e in queue if e.get("tuid") != mt]
+                if taken:
+                    queue.append(taken)
+                    queue.sort(key=lambda e: float(e.get("ts") or 0))
+                _write_queue(qpath, queue)
             alert = (f"named-subagents: identity mix-up — the agent shown as "
-                     f"{got or rec.get('name')} was told it is {told}. Its [Name] report "
-                     f"line will not match the tree.")
+                     f"{got or rec.get('name') or aid} "
+                     + (f"was told it is {told}." if told else "got no [Name] identity.")
+                     + " Its [Name] report line will not match the tree.")
+        elif rec.get("skip"):
+            pass                          # CLI-named or unnamed dispatch: no name to verify
         elif meta is None:
             alert = (f"named-subagents: cannot verify {told}'s name — its meta.json is "
                      f"missing ({mp or 'no transcript path in the SubagentStop event'}). "
@@ -1240,14 +1324,17 @@ def _name_main_stop(event, queue_dir=None):
     apath = _alerts_path(sid, queue_dir)
     if not os.path.exists(apath):
         return None
-    qpath = _queue_path(sid, queue_dir)
-    with _queue_lock(qpath):
-        try:
-            with open(apath, "r", encoding="utf-8") as fh:
-                lines = fh.read().splitlines()
-            os.unlink(apath)
-        except OSError:
-            return None
+    # Claim the file by renaming it first: a writer appending meanwhile either lands
+    # before the rename (read now) or creates a fresh file (shown next Stop). No lock,
+    # so a wedged queue lock cannot hide the alerts, including its own timeout.
+    claimed = f"{apath}.{os.getpid()}.shown"
+    try:
+        os.replace(apath, claimed)
+        with open(claimed, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        os.unlink(claimed)
+    except OSError:
+        return None
     msgs = []
     for line in lines:
         try:
@@ -1363,6 +1450,12 @@ def _settings_hooks_present(cwd=None, event_name=None):
     return False
 
 
+_CONTEXT_ONLY_NOTICE = (
+    "named-subagents: context-only mode (plain `hook run` in settings.json) is deprecated "
+    "and will be removed in 0.8. Switch with `named-subagents hook install --name`, which "
+    "shows each name in the live task tree.")
+
+
 def cmd_hook_run(args=None, argv=None):
     """Auto-namer handler invoked by Claude Code. Reads the event JSON on stdin,
     writes a hookSpecificOutput JSON on stdout, always exits 0.
@@ -1373,9 +1466,17 @@ def cmd_hook_run(args=None, argv=None):
     through `_hook_mutate` (kept so a lingering legacy PreToolUse registration still
     functions — new installs register capture + SubagentStart).
 
-    FAIL-OPEN is the whole contract: any error is swallowed and nothing is written,
-    so the dispatch proceeds unchanged. A broken namer must never break a fan-out,
-    and it must never exit 2 (that would BLOCK the dispatch)."""
+    FAIL-OPEN is the whole contract: no error ever reaches Claude Code, and nothing
+    is written to stdout on error, so the dispatch proceeds unchanged. A broken
+    namer must never break a fan-out, and it must never exit 2 (that would BLOCK
+    the dispatch). An error is still RECORDED as an alert for the main Stop (a
+    best-effort, lock-free append), so a failing hook does not go unnoticed.
+
+    Context-only mode is deprecated (removal planned for 0.8): each of its
+    SubagentStart runs records a notice pointing to `hook install --name`, shown
+    wherever a Stop hook of ours runs (the plugin, or a `hook install
+    --context-only` from 0.7.2 on, which registers one)."""
+    event, ev = None, None
     try:
         flags = set(argv or [])
         capture = "--capture" in flags or bool(getattr(args, "capture", False))
@@ -1389,7 +1490,7 @@ def cmd_hook_run(args=None, argv=None):
                 and _settings_hooks_present(
                     event.get("cwd") if isinstance(event, dict) else None, ev)):
             return 0                      # a settings.json install already handles it
-        if name_mode:
+        if name_mode or ev == "Stop":     # the main Stop shows alerts in either mode
             top = _hook_name(event)
             if top is not None:
                 sys.stdout.write(json.dumps(top, ensure_ascii=False))
@@ -1404,8 +1505,21 @@ def cmd_hook_run(args=None, argv=None):
             out = _hook_mutate(event)
         if out is not None:
             sys.stdout.write(json.dumps({"hookSpecificOutput": out}, ensure_ascii=False))
-    except Exception:  # noqa: BLE001 — fail-open by design
-        pass
+        if ev == "SubagentStart" and not os.environ.get("NAMED_SUBAGENTS_HOOK_DISABLE"):
+            try:                          # optional notice: never costs the agent its name
+                _prune_state()
+                _record_alert(event.get("session_id"), None, _CONTEXT_ONLY_NOTICE)
+            except Exception:  # noqa: BLE001 — best-effort notice
+                pass
+    except Exception as e:  # noqa: BLE001 — fail-open by design; recorded below
+        try:
+            sid = event.get("session_id") if isinstance(event, dict) else None
+            _record_alert(sid, None, (
+                f"named-subagents: the {ev or 'unknown'} hook failed "
+                f"({type(e).__name__}: {e}) and was skipped, so that event's naming step "
+                f"did not run."))
+        except Exception:  # noqa: BLE001 — the alert is best-effort; the hook must still exit 0
+            pass
     return 0
 
 
@@ -1416,6 +1530,25 @@ def _settings_path(args) -> str:
     if getattr(args, "project", None):
         return os.path.join(args.project, ".claude", "settings.json")
     return os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+
+
+def _plugin_active() -> bool:
+    """True when the named-subagents Claude Code plugin is enabled: running from its
+    cache root, or listed in `enabledPlugins` of the user or current project's settings."""
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or ""
+    if "named-subagents" in root:
+        return True
+    paths = [os.path.join(os.path.expanduser("~"), ".claude", "settings.json")]
+    paths += [os.path.join(os.getcwd(), ".claude", n)
+              for n in ("settings.json", "settings.local.json")]
+    for sp in paths:
+        data, _err = _read_settings(sp)
+        ep = data.get("enabledPlugins")
+        if isinstance(ep, dict) and any(
+                isinstance(k, str) and k.split("@")[0] == "named-subagents" and v is True
+                for k, v in ep.items()):
+            return True
+    return False
 
 
 def _hook_command(capture: bool = False) -> str:
@@ -1570,14 +1703,25 @@ def _hook_install_name(args):
     return 0
 
 
+_CONTEXT_ONLY_INSTALL_NOTE = (
+    "⚠ context-only mode is deprecated (removal planned for 0.8); "
+    "`named-subagents hook install --name` shows names in the live task tree.")
+
+
 def cmd_hook_install(args):
-    if getattr(args, "name", False) or getattr(args, "roster", False):
+    """Name mode by default (0.7.2). The older context-only namer is deprecated and
+    stays reachable only through an explicit `--context-only`."""
+    if not getattr(args, "context_only", False):
         return _hook_install_name(args)
+    if getattr(args, "name", False) or getattr(args, "roster", False):
+        print("error: --context-only and --name are different modes; pick one.",
+              file=sys.stderr)
+        return 2
     sp = _settings_path(args)
     data, err = _read_settings(sp)
     if err:
         print(f"error: {sp} is not valid settings JSON ({err}); refusing to modify it.\n"
-              f"Fix or remove that file, then re-run `named-subagents hook install`.",
+              f"Fix or remove that file, then re-run `named-subagents hook install --context-only`.",
               file=sys.stderr)
         return 1
     hooks = data.setdefault("hooks", {})
@@ -1591,6 +1735,9 @@ def cmd_hook_install(args):
     pre = hooks.setdefault("PreToolUse", [])
     if not isinstance(pre, list):
         print(f"error: {sp} has a non-list 'hooks.PreToolUse'; refusing to modify.", file=sys.stderr)
+        return 1
+    if not isinstance(hooks.setdefault("Stop", []), list):
+        print(f"error: {sp} has a non-list 'hooks.Stop'; refusing to modify.", file=sys.stderr)
         return 1
     existed = os.path.exists(sp)
     cmd = _hook_command()
@@ -1607,6 +1754,8 @@ def cmd_hook_install(args):
         ev_new, ev_removed = _prune_our_hooks(hooks.get(ev))
         if ev_removed:
             hooks[ev] = ev_new
+    # The main Stop shows recorded alerts: hook failures and the deprecation notice.
+    hooks["Stop"].append({"hooks": [{"type": "command", "command": cmd}]})
     migrated = " (migrated the legacy PreToolUse entry)" if pre_removed else ""
     refreshed = False
     for _m, h in _iter_our_hooks(ss):
@@ -1620,7 +1769,8 @@ def cmd_hook_install(args):
                     "hooks": [{"type": "command", "command": cap_cmd}]})
     if refreshed:
         _write_settings(sp, data, backup=existed)
-        print(f"auto-namer hook already installed — refreshed the commands in {sp}{migrated}")
+        print(f"auto-namer hook already installed — refreshed the commands in {sp}{migrated}\n"
+              f"{_CONTEXT_ONLY_INSTALL_NOTE}")
         return 0
     ss.append({"matcher": "*", "hooks": [{"type": "command", "command": cmd}]})
     _write_settings(sp, data, backup=existed)
@@ -1629,8 +1779,10 @@ def cmd_hook_install(args):
           f"  event: SubagentStart   matcher: *\n  command: {cmd}\n"
           f"  event: PreToolUse     matcher: Agent|Task   (task capture, output-free)\n"
           f"  command: {cap_cmd}{mig_line}\n"
+          f"  event: Stop           (shows hook failures and notices)\n"
           f"New Claude Code sessions will nickname every subagent dispatch, themed by\n"
           f"its task when available (else by role).\n"
+          f"{_CONTEXT_ONLY_INSTALL_NOTE}\n"
           f"Verify with `named-subagents hook status`.")
     return 0
 
@@ -1708,7 +1860,7 @@ def cmd_hook_status(args):
     if name_mode:
         mode = "yes  (name mode — names in the live task tree)"
     elif installed:
-        mode = "yes  (event: SubagentStart)"
+        mode = "yes  (event: SubagentStart — context-only, deprecated; `hook install --name` replaces it)"
     else:
         mode = "no"
     print(f"installed:  {mode}")
@@ -1722,10 +1874,10 @@ def cmd_hook_status(args):
     if cmd:
         print(f"  command:  {cmd}")
     if installed:
-        print(f"  capture:  {'yes  (PreToolUse task capture — task-themed nicknames)' if capture else 'no  (role-themed only; re-run `hook install` to enable task theming)'}")
+        print(f"  capture:  {'yes  (PreToolUse task capture — task-themed nicknames)' if capture else 'no  (role-themed only; re-run `hook install --context-only` to enable task theming)'}")
     if legacy:
         print("  ⚠ legacy:  a pre-0.4.2 PreToolUse entry is still present (clobber-prone);"
-              " re-run `hook install` to migrate it, or `hook uninstall` to clear it")
+              " re-run `hook install --name` to migrate it, or `hook uninstall` to clear it")
     if leftovers:
         print(f"  ⚠ roster: {len(leftovers)} agent file(s) from 0.5/0.6 remain in {_adir} "
               f"— `named-subagents roster uninstall` removes them")
@@ -1868,8 +2020,11 @@ def build_parser() -> argparse.ArgumentParser:
     hi = hsub.add_parser("install", help="register the hook in Claude Code settings.json")
     _hook_target_flags(hi)
     hi.add_argument("--name", action="store_true",
-                    help="name mode: set each dispatch's `name` so the live task tree "
-                         "shows it (PreToolUse + SubagentStart + SubagentStop)")
+                    help="name mode (the default since 0.7.2): set each dispatch's `name` "
+                         "so the live task tree shows it")
+    hi.add_argument("--context-only", action="store_true",
+                    help="(deprecated, removal planned for 0.8) the older namer: the agent "
+                         "learns its name, but the task tree does not show it")
     hi.add_argument("--roster", action="store_true", help=argparse.SUPPRESS)  # 0.5/0.6 alias
     hi.set_defaults(func=cmd_hook_install)
 

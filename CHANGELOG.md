@@ -5,6 +5,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+**Naming failures are no longer silent, and plain `hook install` now sets up
+name mode.** An agent that SubagentStart could not pair with its dispatch used
+to run with no `[Name]` identity, outside the live-name set, and with no alert.
+Every hook error was swallowed the same way. Both now show at the main Stop.
+
+### Fixed
+- **Untracked agents are alerted.** SubagentStop now checks meta.json even when
+  the agent has no live binding. An Agent dispatch that Start could not pair
+  (its queue entry expired while a permission prompt was open, `agent_type`
+  differed from `subagent_type`, or the Start payload had no `agent_id`) records
+  an "untracked agent" alert, and its queue entry is dropped so it cannot
+  mispair a sibling. Subagents with no `toolUseId` (forked skills such as
+  `/code-review`) are not Agent dispatches and stay quiet. SubagentStart does
+  not alert by itself for the same reason: it cannot tell a lost dispatch from
+  a forked skill.
+- A Start that finds meta.json already written now pairs the queue entry with
+  the matching `toolUseId` and injects the identity, instead of treating the
+  agent as a resume and leaving its entry to mispair the next sibling.
+- When SubagentStop repairs a mispairing where the other dispatch has not
+  started, it puts the wrongly taken entry back on the queue, so a later
+  out-of-order Start still gets its identity. An entry is put back only once, and
+  a denied dispatch's entry still expires with the 30 s queue TTL (a prototype
+  sweep found a longer TTL does not help: `research/2026-09-27-named-subagents-queue-ttl.md`
+  in the owner's notes).
+- **Hook errors are recorded.** Any exception in `hook run` (a lock timeout, a
+  config error, a full disk) records "the <event> hook failed (<type>: <msg>)"
+  for the main Stop. The hook still exits 0 and writes nothing to stdout.
+- The main Stop claims the alerts file by renaming it instead of reading it under
+  the queue lock, so an alert appended during the read is no longer deleted, and
+  a wedged queue lock can no longer hide the alerts that report it.
+- The in-hook lock waits now fit inside the 10 s hook timeout: queue lock ≤ 3 s,
+  ledger lock ≤ 2 s (were 5 s and 10 s). A killed hook queues nothing and
+  alerts nothing, so it must give up first.
+- **A corrupt ledger is kept.** `Ledger` copies an unreadable file to
+  `<path>.corrupt-<timestamp>` before its first save replaces it (readers that
+  never save make no copies) (`Ledger.corrupt`,
+  `Ledger.corrupt_backup`), and name mode records an alert naming the copy.
+  Before, the next save erased every category's history silently.
+- `doctor` no longer tells plugin users to run the command that turns the
+  plugin's names off. It reports "plugin active (name mode)", and FAILs when
+  context-only settings.json hooks override the plugin.
+- The 0.7.0 "Known limit" note wrongly said the ledger never redraws a used name.
+
+### Changed
+- `hook install` registers **name mode** by default (`--name` still works).
+  The older context-only namer needs an explicit `--context-only`, and that
+  install now also registers a Stop hook so its alerts are shown.
+- The ledger is saved once per draw instead of twice.
+
+### Deprecated
+- Context-only mode. Each context-only SubagentStart records a notice pointing
+  to `hook install --name`, shown wherever a Stop hook of ours runs. Removal is
+  planned for 0.8. Installs from before 0.7.2 have no Stop hook of their own,
+  so they see the notice only when the plugin is also enabled.
+
 ## [0.7.1] — 2026-09-26
 
 **The npm package and the JavaScript port are retired.** The plugin runs the
@@ -129,8 +184,9 @@ nothing to report).
   cannot be the source for a longer-running agent).
 - Known limit: while such an agent runs, the session holds the refused name as
   live instead of the agent's own, so a model-supplied duplicate of the agent's
-  name is not reported until it finishes. New picks are unaffected (the
-  non-repeat ledger never redraws a used name).
+  name is not reported until it finishes. *(Corrected in 0.7.2: new picks can
+  be affected too. The ledger redraws every name once a category's pool runs
+  out, so a new pick can repeat the refused agent's own name while it runs.)*
 
 ## [0.6.0] — 2026-09-26
 

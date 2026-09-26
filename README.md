@@ -57,12 +57,14 @@ record and shows a mix-up notice. Details and live verification: [CHANGELOG](CHA
 
 ```bash
 pip install named-subagents
-named-subagents hook install --name  # the plugin's four hooks, in ~/.claude/settings.json
+named-subagents hook install  # name mode: the plugin's four hooks, in ~/.claude/settings.json
 named-subagents hook status
 ```
 
-Plain `hook install` registers the older context-only namer instead: the agent
-learns its name, but the tree does not show it. `hook install --project .` scopes
+`hook install --context-only` registers the older namer instead (deprecated,
+removal planned for 0.8): the agent learns its name, but the tree does not show
+it. With the plugin enabled, a context-only install turns the tree names off,
+because the plugin steps aside for every event these hooks cover. `hook install --project .` scopes
 either to one project; `hook uninstall` removes them. `install`/`uninstall` back up
 `settings.json`, refuse to touch malformed JSON, and only add or remove their own
 entries. Hooks load at session start, so open a new session afterwards. Install
