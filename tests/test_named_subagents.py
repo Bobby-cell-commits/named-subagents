@@ -1100,29 +1100,32 @@ with tempfile.TemporaryDirectory() as d:
 
 # --------------------------------------------------------------------------- #
 section("LOW: Registry.load rejects non-regular / oversized files")
-try:
-    Registry.load("/dev/zero")
-    check("registry /dev/zero rejected (no hang)", False)
-except ValueError as e:
-    check("registry /dev/zero rejected (no hang)", "regular file" in str(e))
-with tempfile.TemporaryDirectory() as d:
-    fifo = os.path.join(d, "reg.fifo")
-    os.mkfifo(fifo)
+if os.name == "nt":                        # no /dev/zero or FIFOs on Windows
+    print("  [SKIP] device/FIFO checks are POSIX-only")
+else:
     try:
-        Registry.load(fifo)
-        check("registry FIFO rejected (no hang)", False)
-    except ValueError:
-        check("registry FIFO rejected (no hang)", True)
+        Registry.load("/dev/zero")
+        check("registry /dev/zero rejected (no hang)", False)
+    except ValueError as e:
+        check("registry /dev/zero rejected (no hang)", "regular file" in str(e))
+    with tempfile.TemporaryDirectory() as d:
+        fifo = os.path.join(d, "reg.fifo")
+        os.mkfifo(fifo)
+        try:
+            Registry.load(fifo)
+            check("registry FIFO rejected (no hang)", False)
+        except ValueError:
+            check("registry FIFO rejected (no hang)", True)
 
-# --------------------------------------------------------------------------- #
-section("LOW: installed_agent_names skips a FIFO named *.md")
-with tempfile.TemporaryDirectory() as d:
-    ag = os.path.join(d, "agents"); os.makedirs(ag)
-    with open(os.path.join(ag, "real.md"), "w") as fh:
-        fh.write("---\nname: RealAgent\n---\n")
-    os.mkfifo(os.path.join(ag, "evil.md"))
-    got = installed_agent_names([ag])
-    check("FIFO *.md skipped, regular *.md still scanned", got == {"RealAgent"}, str(got))
+
+    section("LOW: installed_agent_names skips a FIFO named *.md")
+    with tempfile.TemporaryDirectory() as d:
+        ag = os.path.join(d, "agents"); os.makedirs(ag)
+        with open(os.path.join(ag, "real.md"), "w") as fh:
+            fh.write("---\nname: RealAgent\n---\n")
+        os.mkfifo(os.path.join(ag, "evil.md"))
+        got = installed_agent_names([ag])
+        check("FIFO *.md skipped, regular *.md still scanned", got == {"RealAgent"}, str(got))
 
 # --------------------------------------------------------------------------- #
 section("LOW: CLI ledger in a non-existent directory -> clean error")
