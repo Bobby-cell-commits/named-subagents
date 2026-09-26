@@ -8,19 +8,14 @@ userspace port of [Codex's per-instance `nickname_candidates`](https://developer
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Bobby-cell-commits/named-subagents/master/assets/demo.gif"
-       alt="named-subagents demo — themed, non-repeating nicknames for parallel Claude Code subagents"
+       alt="A real Claude Code 2.1.283 session fanning out three subagents; the task tree shows them as Backus, Chekhov and Bosch"
        width="760">
 </p>
 
-Fan out three `Explore` agents in Claude Code and you get three identical
-`Explore` rows. This gives each instance its own name, themed to the kind of
-task, never repeated across runs:
-
-```
-🧭 Hudson     [Explore]   map the auth module           ← explorers explore
-🤔 Plato      [architect] why was event-sourcing chosen ← philosophers ponder
-🔍 Bosch      [debugger]  root-cause the flaky test     ← detectives debug
-```
+Fan out several subagents in Claude Code and the task tree shows each one by its
+type. This plugin gives every instance its own name, themed to the kind of task
+and never repeated across runs. (Recorded from a real session; the banner and
+status line are cropped out.)
 
 ## Quick start: the Claude Code plugin
 
@@ -29,15 +24,8 @@ claude plugin marketplace add Bobby-cell-commits/named-subagents
 claude plugin install named-subagents@named-subagents
 ```
 
-Needs `python3` (3.8+) on `PATH`. New sessions show a name for every subagent in
-the live task tree, for any agent type:
-
-```
-● main
-○ Diesel    🔧 Diesel · run the hostname check
-○ Hudson    🧭 Hudson · list /etc/apt
-○ Planck    🔬 Planck · research the release cycle
-```
+Needs `python3` (3.8+) on `PATH`. New sessions name every subagent, for any
+agent type.
 
 The plugin runs four hooks:
 
@@ -55,12 +43,9 @@ The plugin runs four hooks:
 It adds nothing to the prompt: no agent files, no extra agent-list entries.
 `NAMED_SUBAGENTS_HOOK_DISABLE=1` turns it off.
 
-**Upgrading from 0.5/0.6?** Those versions wrote callsign files (`Bosch.md`, …)
-into `~/.claude/agents`, each costing tokens in every session. Remove them with
-`named-subagents roster uninstall --dry-run`, then without `--dry-run`. Only
-files carrying the roster marker are touched. If you installed hooks with
-`named-subagents hook install`, run `hook uninstall` too; while that install is
-present the plugin stands down so both never name one dispatch.
+If you registered hooks earlier with `named-subagents hook install`, run
+`named-subagents hook uninstall`; while that install is present the plugin's hooks
+stand down so the two never name one dispatch.
 
 **Known limits.** `name` is an Agent-tool input that is not in the published
 schema, so an update could drop it (the `Stop` check exists for that). If you
@@ -123,6 +108,12 @@ starts a new **generation** (`Magellan·2`, …). A name is never reused unless 
 are safe.
 
 ## Library
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Bobby-cell-commits/named-subagents/master/assets/library-demo.gif"
+       alt="examples/demo.py: four fan-out rounds with themed, non-repeating names and the ledger summary"
+       width="640">
+</p>
 
 ```bash
 pip install named-subagents     # Python 3.8+, zero dependencies
