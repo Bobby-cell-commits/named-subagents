@@ -1,0 +1,7 @@
+# name mode 0.7.0 after review hardening (toolUseId check, resume via meta.json), CC 2.1.283 (Claude Code), 2026-09-26T17:41:23Z
+# 4 parallel: 2x general-purpose, Explore, research-subagent; frame f10. All four reports opened with their own [Name]; all released; no alerts.
+  ● main
+  ◯ Cerf         ⌨️ Cerf · Run hostname command with delay                                                                                 6s · ↓ 21.8k tokens
+  ◯ AlKhwarizmi  ⌨️ AlKhwarizmi · Run kernel version command with delay                                                                    5s · ↓ 22.0k tokens
+  ◯ IbnBattuta   🧭 IbnBattuta · List apt directory with delay                                                                             4s · ↓ 10.7k tokens
+  ◯ Hubble       🔬 Hubble · Read and summarize OS release file                                                                             3s · ↓ 7.1k tokens
