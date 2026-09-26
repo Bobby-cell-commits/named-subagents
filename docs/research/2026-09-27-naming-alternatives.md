@@ -104,9 +104,10 @@ Explore 19%), and 4% were nested.
 Then delete the roster files, `roster ensure` and the retype. That saves ~1,440 tokens per
 main prompt and per Agent-capable subagent.
 
-Still open: the foreground tree render (needs a forced-foreground dispatch or an owner
-screenshot); the peer-session title collision; and the activity-text sighting (F7), which was not
-reproduced.
+~~Still open: the foreground tree render; the peer-session title collision.~~ Both closed live on
+CC 2.1.283 and shipped in 0.7.0 (CHANGELOG "Verified live": `tree-foreground-070.txt`,
+`peer-title-collision-070.txt`); the installed-plugin smoke is `deploy-smoke-070.txt`. Still open:
+the activity-text sighting (F7), which was not reproduced.
 
 Cheapest stopgap if the rework waits: randomize the pick across today's 6 callsigns. That
 fixes "same names every time" at today's cost.
