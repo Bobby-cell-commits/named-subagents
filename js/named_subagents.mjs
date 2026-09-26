@@ -982,7 +982,7 @@ export function buildAssignment(
     theme,
     emoji,
     subagent_type: subagentType,
-    description: `${emoji} ${nickname}: ${shortTask(task)}`.trim(),
+    description: `${emoji} ${nickname} · ${shortTask(task)}`.trim(),
     prompt: personaPreamble(nickname, theme, withBio ? bio : null) + task,
     bio,
   };

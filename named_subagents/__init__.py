@@ -1045,7 +1045,7 @@ def build_assignment(
         theme=theme,
         emoji=emoji,
         subagent_type=subagent_type,
-        description=f"{emoji} {nickname}: {task_short}".strip(),
+        description=f"{emoji} {nickname} · {task_short}".strip(),
         prompt=persona_preamble(nickname, theme, bio=bio if with_bio else None) + task,
         bio=bio,
     )

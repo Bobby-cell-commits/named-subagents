@@ -133,8 +133,8 @@ with tempfile.TemporaryDirectory() as td:
     check("subagent_type rewritten to a roster callsign",
           got1 in man["files"], str(out))
     check("original base no longer the type", got1 != "general-purpose")
-    check("description prefixed with a category emoji, not renamed",
-          "probe task" in (ui.get("description") or "") and got1 not in (ui.get("description") or ""))
+    check("description carries the callsign in the label ('<emoji> Name · task')",
+          (ui.get("description") or "").endswith(f"{got1} · probe task"), ui.get("description"))
     check("prompt untouched (persona lives in the definition)",
           ui.get("prompt") == "Do the probe.")
 

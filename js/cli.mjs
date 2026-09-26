@@ -901,7 +901,7 @@ function hookMutate(event, ledgerPath = null, avoid = null) {
   const bio = process.env.NAMED_SUBAGENTS_HOOK_BIO ? reg.bio(cat, stripGen(nickname)) : null;
   const updated = { ...ti };
   updated.description = description
-    ? `${emoji} ${nickname}: ${description}`.trim()
+    ? `${emoji} ${nickname} · ${description}`.trim()
     : `${emoji} ${nickname}`;
   if (prompt) updated.prompt = personaPreamble(nickname, theme, bio) + prompt;
   return { hookEventName: "PreToolUse", updatedInput: updated };
@@ -1153,7 +1153,9 @@ function hookRetype(event, roster = null, queueDir = null, ledgerPath = null) {
   const emoji = reg.emoji(hasOwn(reg.categories, usedCat) ? usedCat : "default");
   const updated = { ...ti };
   updated.subagent_type = name;
-  updated.description = description ? `${emoji} ${description}`.trim() : `${emoji} ${name}`;
+  // The name goes in the label too: the type column shows it, but it is truncated
+  // past ~24 chars and the label is what completion notices quote.
+  updated.description = description ? `${emoji} ${name} · ${description}`.trim() : `${emoji} ${name}`;
   return { hookEventName: "PreToolUse", updatedInput: updated };
 }
 

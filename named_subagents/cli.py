@@ -776,7 +776,7 @@ def _hook_mutate(event, ledger_path=None, avoid=None):
     emoji, theme = reg.emoji(cat), reg.theme(cat)
     bio = reg.bio(cat, _strip_gen(nickname)) if os.environ.get("NAMED_SUBAGENTS_HOOK_BIO") else None
     updated = dict(ti)
-    updated["description"] = (f"{emoji} {nickname}: {description}".strip()
+    updated["description"] = (f"{emoji} {nickname} · {description}".strip()
                               if description else f"{emoji} {nickname}")
     if prompt:
         updated["prompt"] = persona_preamble(nickname, theme, bio=bio) + prompt
@@ -1037,7 +1037,10 @@ def _hook_retype(event, roster=None, queue_dir=None, ledger_path=None):
     emoji = reg.emoji(used_cat if used_cat in reg.categories else "default")
     updated = dict(ti)
     updated["subagent_type"] = name
-    updated["description"] = f"{emoji} {description}".strip() if description else f"{emoji} {name}"
+    # The name goes in the label too: the type column shows it, but it is truncated
+    # past ~24 chars and the label is what completion notices quote.
+    updated["description"] = (f"{emoji} {name} · {description}".strip()
+                              if description else f"{emoji} {name}")
     return {"hookEventName": "PreToolUse", "updatedInput": updated}
 
 
