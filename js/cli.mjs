@@ -1291,7 +1291,8 @@ function recordAlert(sessionId, queueDir, msg) {
 /** SubagentStop: release by agent_id (a not-live agent is a no-op), then check it
  * against meta.json, whose `toolUseId` is the dispatch's PreToolUse tool_use_id.
  * A differing toolUseId means Start paired the wrong entry: swap back with the
- * live agent that holds it, else drop this agent's own (still-queued) entry.
+ * live agent that holds it, else take the agent's true identity (meta.json's
+ * name, then its queued entry) and drop that entry from the queue.
  * Alerts are RECORDED for the main Stop (CC drops SubagentStop systemMessage).
  * Mirrors the Python _name_stop. Always returns null. */
 function nameStop(event, queueDir = null) {
@@ -1320,7 +1321,13 @@ function nameStop(event, queueDir = null) {
         for (const k of keys) rec[k] = other[1][k] === undefined ? null : other[1][k];
         Object.assign(other[1], mine);
       } else {
-        writeQueue(qpath, readQueue(qpath).filter((e) => e.tuid !== mt));
+        const queue = readQueue(qpath);
+        const own = queue.find((e) => e.tuid === mt) || {};
+        // Adopt the agent's true identity (a resume reads it). meta.json's name
+        // first: the queued entry expires after QUEUE_TTL_SECONDS.
+        Object.assign(rec, { name: got || (own.name === undefined ? null : own.name),
+          own: !!own.own, category: own.category === undefined ? null : own.category, tuid: mt });
+        writeQueue(qpath, queue.filter((e) => e.tuid !== mt));
       }
       alert = `named-subagents: identity mix-up — the agent shown as ${got || rec.name} `
         + `was told it is ${told}. Its [Name] report line will not match the tree.`;

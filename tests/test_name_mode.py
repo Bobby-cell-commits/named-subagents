@@ -382,6 +382,25 @@ with tempfile.TemporaryDirectory() as td:
     rc, out = run(start("dn2", session=s), env())
     check("the agent's own queue entry was removed (it cannot mispair a later Start)",
           out is None, str(out))
+    run(start("dn1", session=s), env())             # SendMessage resume of the repaired agent
+    check("a resume after the repair holds the agent's TRUE name, not the denied one",
+          live(s) == {nok}, f"live={live(s)} denied={nden} ok={nok}")
+
+    section("hardening — the repair holds for an agent that ran past the queue TTL")
+    s = "dnl"
+    nden = name_of(run(pre(session=s, description="denied", tool_use_id="tDL"), env())[1])
+    nok = name_of(run(pre(session=s, description="ok", tool_use_id="tOL"), env())[1])
+    run(start("dnl1", session=s), env())            # pops the DENIED entry by FIFO
+    qp = cli._queue_path(s, QD)                     # the agent runs 40s: its entry expires
+    with open(qp, encoding="utf-8") as fh:
+        aged = [dict(json.loads(l), ts=json.loads(l)["ts"] - 40) for l in fh if l.strip()]
+    with open(qp, "w", encoding="utf-8") as fh:
+        fh.writelines(json.dumps(e) + "\n" for e in aged)
+    write_meta("dnl1", {"name": nok, "toolUseId": "tOL"})
+    run(stop("dnl1", session=s) | {"transcript_path": TX}, env())
+    run(start("dnl1", session=s), env())            # SendMessage resume
+    check("a resume after a >30s run holds the TRUE name (from meta.json)",
+          live(s) == {nok}, f"live={live(s)} denied={nden} ok={nok}")
 
     section("hardening — a model-supplied name that duplicates a live one is reported")
     s = "dup"

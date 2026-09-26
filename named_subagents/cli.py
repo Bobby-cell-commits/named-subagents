@@ -1212,8 +1212,9 @@ def _name_stop(event, queue_dir=None):
     - toolUseId differs from the bound dispatch: Start paired the wrong queue
       entry. If another live agent holds that dispatch, the two swapped; swap
       their records back. Otherwise the bound entry was a dispatch that never
-      started (denied/errored); drop this agent's own entry from the queue so it
-      cannot mispair a later Start. Either way the live set ends up correct, and
+      started (denied/errored); the record takes this agent's true identity
+      (meta.json's name, then its queued entry), and that entry leaves the
+      queue so it cannot mispair a later Start. Either way the live set ends up correct, and
       a mix-up alert is recorded (the agent was told the wrong [Name]).
     - Otherwise: meta.json missing, or `name` missing/different, is recorded.
 
@@ -1251,6 +1252,11 @@ def _name_stop(event, queue_dir=None):
                 other.update(mine)
             else:
                 queue = _read_queue(qpath)
+                own = next((e for e in queue if e.get("tuid") == mt), {})
+                # Adopt the agent's true identity (a resume reads it). meta.json's
+                # name first: the queued entry expires after _QUEUE_TTL_SECONDS.
+                rec.update(name=got or own.get("name"), own=bool(own.get("own")),
+                           category=own.get("category"), tuid=mt)
                 _write_queue(qpath, [e for e in queue if e.get("tuid") != mt])
             alert = (f"named-subagents: identity mix-up — the agent shown as "
                      f"{got or rec.get('name')} was told it is {told}. Its [Name] report "
