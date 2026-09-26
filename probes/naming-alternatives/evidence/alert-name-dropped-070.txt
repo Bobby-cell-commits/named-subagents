@@ -1,0 +1,14 @@
+# name mode 0.7.0 fail-loud proof: NAMED_SUBAGENTS_FAULT_DROP_NAME=1 (hook omits name), CC 2.1.283 (Claude Code), 2026-09-26T17:17:53Z
+# SubagentStop records the alert; the main Stop hook shows it (CC drops SubagentStop systemMessage)
+❯ Dispatch one general-purpose agent with the Agent tool to read /etc/hostname, then report its answer.
+● Agent(Read system hostname file)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+● Agent dispatched. It's reading /etc/hostname in the background and will report its findings once complete. I'll relay the answer shortly.
+✻ Waiting for 1 background agent to finish
+● Agent "⌨️  Ritchie · Read system hostname file" finished · 4s
+● The agent completed successfully. The contents of /etc/hostname are:
+  bogdan-System-Product-Name
+  This is the system's hostname.
+  ⎿  Stop says: named-subagents: Ritchie was dispatched with `name` but Claude Code did not record it — the task tree likely showed the agent type instead.
+     `name` may no longer be honored; the label still carries the name.
+✻ Sautéed for 8s · done 8:17 PM

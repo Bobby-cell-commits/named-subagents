@@ -1,0 +1,20 @@
+# name mode 0.7.0 (branch name-field), CC 2.1.283 (Claude Code), 2026-09-26T17:13:01Z
+# tui_capture.sh, plugin via --plugin-dir, --setting-sources project,local; frame f10 (running) then f20
+  3. research-subagent — reading /etc/os-release and searching for Linux Mint release cycle info
+  Each agent will complete its tasks (with the 25-second delays included), and I'll receive notifications when they finish. Once all three have completed, I'll
+  summarize their findings for you.
+✻ Waiting for 3 background agents to finish
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents · ↓ to manage                                                                               /rc
+  ● main
+  ◯ Diesel  🔧 Diesel · Run hostname command with delay                                                                                    5s · ↓ 24.4k tokens
+  ◯ Hudson  🧭 Hudson · List /etc/apt directory with delay                                                                                 4s · ↓ 10.7k tokens
+  ◯ Planck  🔬 Planck · Research Linux distribution and release cycle                                                                       3s · ↓ 7.1k tokens
+---- f20
+  ⏵⏵ bypass permissions on · 2 shells · ← for agents · ↓ to manage                                                                                         /rc
+  ● main
+  ◯ Diesel  🔧 Diesel · Run hostname command with delay                                                                                    7s · ↓ 24.8k tokens
+  ◯ Hudson  🧭 Hudson · List /etc/apt directory with delay                                                                                 8s · ↓ 12.6k tokens
+  ◯ Planck  🔬 Planck · Research Linux distribution and release cycle                                                                      13s · ↓ 9.9k tokens
