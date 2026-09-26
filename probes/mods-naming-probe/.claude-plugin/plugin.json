@@ -1,0 +1,6 @@
+{
+  "name": "mods-naming-probe",
+  "version": "0.0.1",
+  "description": "Throwaway probe: can function hooks (agent.spawn / $.agent.register / turn.complete) give parallel subagents distinct visible names? Writes JSONL markers on every hook fire.",
+  "author": { "name": "named-subagents (probe)" }
+}
