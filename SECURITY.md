@@ -10,8 +10,9 @@ a public issue. You should receive a response within a week.
 
 | Version | Supported |
 |---|---|
-| 0.4.x | ✅ |
-| 0.2.x–0.3.x | ⚠ upgrade — 0.4.0/0.4.1's auto-namer is silently broken under multiple hooks; ≥ 0.4.2 fixes delivery |
+| 0.7.x | ✅ |
+| 0.5.x–0.6.x | ⚠ upgrade — roster mode is removed; run `named-subagents roster uninstall` after upgrading |
+| 0.2.x–0.4.x | ⚠ upgrade — 0.4.0/0.4.1's auto-namer is silently broken under multiple hooks |
 | < 0.2 | ❌ (never published) |
 
 ## Threat model
