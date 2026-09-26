@@ -1,5 +1,6 @@
 """Prompt tokens of the FIRST main-thread API call in a transcript (input + cache create + cache read)."""
-import json, sys
+import json
+import sys
 for path in sys.argv[1:]:
     for line in open(path):
         o = json.loads(line)

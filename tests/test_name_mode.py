@@ -359,11 +359,11 @@ with tempfile.TemporaryDirectory() as td:
     run(start("sw1", session=s), env())             # FIFO binds sw1 -> A
     run(start("sw2", session=s), env())             # and sw2 -> B, but really swapped:
     write_meta("sw1", {"name": nb_, "toolUseId": "tB"})
-    run(stop("sw1", session=s) | {"transcript_path": TX}, env())
+    run({**stop("sw1", session=s), "transcript_path": TX}, env())
     check("after the swapped agent stops, its TRUE name is free and the other stays live",
           live(s) == {na_}, f"live={live(s)} a={na_} b={nb_}")
     write_meta("sw2", {"name": na_, "toolUseId": "tA"})
-    run(stop("sw2", session=s) | {"transcript_path": TX}, env())
+    run({**stop("sw2", session=s), "transcript_path": TX}, env())
     check("the partner's Stop then releases the other name", live(s) == set(), str(live(s)))
     rc, out = run({"hook_event_name": "Stop", "session_id": s}, env())
     msg = (out or {}).get("systemMessage") or ""
@@ -376,7 +376,7 @@ with tempfile.TemporaryDirectory() as td:
     nok = name_of(run(pre(session=s, description="ok", tool_use_id="tO"), env())[1])
     run(start("dn1", session=s), env())             # pops the DENIED entry by FIFO
     write_meta("dn1", {"name": nok, "toolUseId": "tO"})
-    run(stop("dn1", session=s) | {"transcript_path": TX}, env())
+    run({**stop("dn1", session=s), "transcript_path": TX}, env())
     check("the denied name and the agent's true name are both free", live(s) == set(),
           f"live={live(s)} denied={nden} ok={nok}")
     rc, out = run(start("dn2", session=s), env())
@@ -393,11 +393,11 @@ with tempfile.TemporaryDirectory() as td:
     run(start("dnl1", session=s), env())            # pops the DENIED entry by FIFO
     qp = cli._queue_path(s, QD)                     # the agent runs 40s: its entry expires
     with open(qp, encoding="utf-8") as fh:
-        aged = [dict(json.loads(l), ts=json.loads(l)["ts"] - 40) for l in fh if l.strip()]
+        aged = [dict(json.loads(ln), ts=json.loads(ln)["ts"] - 40) for ln in fh if ln.strip()]
     with open(qp, "w", encoding="utf-8") as fh:
         fh.writelines(json.dumps(e) + "\n" for e in aged)
     write_meta("dnl1", {"name": nok, "toolUseId": "tOL"})
-    run(stop("dnl1", session=s) | {"transcript_path": TX}, env())
+    run({**stop("dnl1", session=s), "transcript_path": TX}, env())
     run(start("dnl1", session=s), env())            # SendMessage resume
     check("a resume after a >30s run holds the TRUE name (from meta.json)",
           live(s) == {nok}, f"live={live(s)} denied={nden} ok={nok}")
