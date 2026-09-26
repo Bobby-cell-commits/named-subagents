@@ -5,8 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-**Naming failures are no longer silent, and plain `hook install` now sets up
-name mode.** An agent that SubagentStart could not pair with its dispatch used
+## [0.7.2] — 2026-09-27
+
+**Naming failures are no longer silent, plain `hook install` now sets up name
+mode, and name mode works on Windows.** An agent that SubagentStart could not pair with its dispatch used
 to run with no `[Name]` identity, outside the live-name set, and with no alert.
 Every hook error was swallowed the same way. Both now show at the main Stop.
 
@@ -47,6 +49,18 @@ Every hook error was swallowed the same way. Both now show at the main Stop.
   plugin's names off. It reports "plugin active (name mode)", and FAILs when
   context-only settings.json hooks override the plugin.
 - The 0.7.0 "Known limit" note wrongly said the ledger never redraws a used name.
+- **Windows: name mode named nothing.** The hook wrote its emoji label to a
+  cp1252 stdout pipe and failed with `UnicodeEncodeError` on every dispatch
+  (`doctor`, `hook install` and `--format table` crashed the same way). Hook
+  output is now ASCII-escaped JSON, hook input is read as UTF-8, and CLI output
+  is UTF-8 on a pipe.
+- **Windows: parallel dispatches lost queue entries** (2 to 7 of 8 queued), so
+  siblings were told shifted names. The queue and ledger had no lock without
+  `fcntl`; they now lock with `msvcrt.locking`, and atomic file replaces retry
+  briefly on Windows' `PermissionError`. CI now runs every suite on
+  `windows-latest` (Python 3.8 and 3.13). What is still unverified is Claude
+  Code itself on Windows: whether it honors `name` there, and whether the
+  plugin's `python3` command resolves.
 
 ### Changed
 - `hook install` registers **name mode** by default (`--name` still works).

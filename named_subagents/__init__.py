@@ -78,7 +78,7 @@ def _replace(src: str, dst: str) -> None:
                 raise
             time.sleep(0.01)
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REGISTRY_PATH = os.path.join(_HERE, "registry.json")

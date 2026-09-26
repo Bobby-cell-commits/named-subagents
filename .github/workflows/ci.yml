@@ -47,6 +47,30 @@ jobs:
       - name: Doctor
         run: named-subagents doctor
 
+  windows:
+    # Windows has no fcntl (msvcrt locks instead) and a cp1252 stdout by default;
+    # name mode broke on both before 0.7.2 and nothing caught it.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Test suites
+        run: |
+          python tests/test_named_subagents.py
+          python tests/test_hook.py
+          python tests/test_name_mode.py
+          python tests/test_roster.py
+      - name: Resolution accuracy eval + doctor
+        run: |
+          python tests/eval_resolution.py
+          python -m named_subagents doctor
+
   lint:
     runs-on: ubuntu-latest
     steps:
