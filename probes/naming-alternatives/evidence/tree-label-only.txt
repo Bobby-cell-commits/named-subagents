@@ -1,0 +1,50 @@
+cd /tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-label &&  claude --model haiku --setting-sources projec
+t,local --allowedTools Bash Read
+bogdan@bogdan-System-Product-Name:/tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-label$ cd /tmp/claude-10
+00/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-label &&  claude --model haiku --setting-sources project,local --allowed
+Tools Bash Read
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-label
+
+
+❯ Dispatch three general-purpose agents in ONE message, all with run_in_background true. Each one should: run 'sleep 5' with Bash, read /etc/hostname, run
+  'sleep 5', then reply done. Descriptions: 'check host alpha', 'check host beta', 'check host gamma'.
+
+● 3 background agents launched (↓ to manage)
+   ├ check host alpha
+   ├ check host beta
+   └ check host gamma
+
+● Done. All three agents (alpha, beta, gamma) dispatched in parallel and running in the background. Each will sleep, read the hostname, sleep again, and report
+  done. Notifications will arrive when they complete.
+
+✻ Waiting for 3 background agents to finish
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents · ↓ to manage                                                                                          /rc
+
+  ● main
+  ◯ general-purpose  Hopper · check host alpha                                                                                            16s · ↓ 23.9k tokens
+  ◯ general-purpose  Lovelace · check host beta                                                                                           15s · ↓ 24.1k tokens
+  ◯ general-purpose  Noether · check host gamma                                                                                           14s · ↓ 23.9k tokens
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

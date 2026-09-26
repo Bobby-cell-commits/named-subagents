@@ -1,0 +1,17 @@
+exit=0
+I'm getting blocked by a plugin hook that's trying to dispatch agents to unavailable subagent types. The hook is attempting to assign named agents ('n:Hopper', 'n:Lovelace', 'n:Noether', 'n:Shackleton') that don't exist in your available agent list.
+
+The available agents are: `claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`
+
+This suggests your `.claude/settings.json` or `.claude/settings.local.json` has a hook configuration that's out of sync with available agents. You can check your settings with `/config` or ask to review the settings files to fix the hook configuration.
+transcript: /home/bogdan/.claude/projects/-tmp-claude-1000--home-bogdan-Dev-open-brain-7a86b2d5-aebe-4e95-a43a-cbae6328f6bb-scratchpad-jit-show/fa229d00-97f9-46ec-acbd-dbcc6d586100.jsonl
+main initial added= ['claude', 'Explore', 'general-purpose', 'Plan', 'statusline-setup'] removed= []
+{"ts":"2026-09-26T16:25:50.766Z","hook":"agent.register","mode":"show","k":0,"name":"Hopper","returned":{"agent":"n:Hopper"}}
+{"ts":"2026-09-26T16:25:50.771Z","hook":"agent.spawn.error","mode":"show","k":0,"type":"n:Hopper","error":"HooksError: a hook's subagentType 'n:Hopper' names no agent this call can dispatch (available: claude, Explore, general-purpose, Plan, statusline-setup)"}
+{"ts":"2026-09-26T16:25:51.318Z","hook":"agent.register","mode":"show","k":1,"name":"Lovelace","returned":{"agent":"n:Lovelace"}}
+{"ts":"2026-09-26T16:25:51.320Z","hook":"agent.spawn.error","mode":"show","k":1,"type":"n:Lovelace","error":"HooksError: a hook's subagentType 'n:Lovelace' names no agent this call can dispatch (available: claude, Explore, general-purpose, Plan, statusline-setup)"}
+{"ts":"2026-09-26T16:25:54.154Z","hook":"agent.register","mode":"show","k":2,"name":"Noether","returned":{"agent":"n:Noether"}}
+{"ts":"2026-09-26T16:25:54.156Z","hook":"agent.spawn.error","mode":"show","k":2,"type":"n:Noether","error":"HooksError: a hook's subagentType 'n:Noether' names no agent this call can dispatch (available: claude, Explore, general-purpose, Plan, statusline-setup)"}
+{"ts":"2026-09-26T16:25:54.889Z","hook":"agent.register","mode":"show","k":3,"name":"Shackleton","returned":{"agent":"n:Shackleton"}}
+{"ts":"2026-09-26T16:25:54.892Z","hook":"agent.spawn.error","mode":"show","k":3,"type":"n:Shackleton","error":"HooksError: a hook's subagentType 'n:Shackleton' names no agent this call can dispatch (available: claude, Explore, general-purpose, Plan, statusline-setup)"}
+offer lines:

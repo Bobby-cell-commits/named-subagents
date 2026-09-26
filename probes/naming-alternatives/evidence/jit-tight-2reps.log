@@ -1,0 +1,26 @@
+exit=0
+main initial added= ['claude', 'Explore', 'general-purpose', 'Plan', 'statusline-setup'] removed= []
+main DELTA added= ['n:AlanKay', 'n:AlKhwarizmi'] removed= []
+main DELTA added= [] removed= ['n:AlKhwarizmi', 'n:AlanKay']
+sub:agent-ab2ce504f77d6b initial added= ['claude', 'Explore', 'general-purpose', 'n:AlKhwarizmi', 'Plan', 'statusline-setup'] removed= []
+sub:agent-a9488ab4e9df74 initial added= ['claude', 'Explore', 'general-purpose', 'n:AlanKay', 'n:AlKhwarizmi', 'Plan', 'statusline-setup'] removed= []
+sub:agent-aaee2137748eee initial added= ['claude', 'Explore', 'general-purpose', 'Plan', 'statusline-setup'] removed= []
+{"ts":"2026-09-26T16:30:56.585Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":0,"type":"n:Achebe","result":{"model":"claude-haiku-4-5-20251001","agentId":"a9488ab4e9df74363"}}
+{"ts":"2026-09-26T16:30:57.019Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":1,"type":"n:Ada","result":{"model":"claude-haiku-4-5-20251001","agentId":"aaee2137748eeeb5c"}}
+{"ts":"2026-09-26T16:30:57.470Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":2,"type":"n:Aegis","result":{"model":"claude-haiku-4-5-20251001","agentId":"ab2ce504f77d6b38a"}}
+{"ts":"2026-09-26T16:30:58.975Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":3,"type":"n:Aho","result":{"model":"claude-haiku-4-5-20251001","agentId":"a0453339063d16cc5"}}
+{"ts":"2026-09-26T16:30:59.755Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":4,"type":"n:AlKhwarizmi","result":{"model":"claude-haiku-4-5-20251001","agentId":"a915a47d8098d2ef3"}}
+{"ts":"2026-09-26T16:31:00.163Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":5,"type":"n:AlanKay","result":{"model":"claude-haiku-4-5-20251001","agentId":"a8047c96484cc1807"}}
+exit=0
+main initial added= ['claude', 'Explore', 'general-purpose', 'Plan', 'statusline-setup'] removed= []
+main DELTA added= ['n:AlanKay', 'n:AlKhwarizmi'] removed= []
+main DELTA added= [] removed= ['n:AlKhwarizmi', 'n:AlanKay']
+sub:agent-a43cbbca407a6a initial added= ['claude', 'Explore', 'general-purpose', 'Plan', 'statusline-setup'] removed= []
+sub:agent-ad50f9601e13dd initial added= ['claude', 'Explore', 'general-purpose', 'n:AlKhwarizmi', 'Plan', 'statusline-setup'] removed= []
+sub:agent-ae4b305fe9962b initial added= ['claude', 'Explore', 'general-purpose', 'n:AlKhwarizmi', 'Plan', 'statusline-setup'] removed= []
+{"ts":"2026-09-26T16:31:13.471Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":0,"type":"n:Achebe","result":{"model":"claude-haiku-4-5-20251001","agentId":"ae4b305fe9962b6e3"}}
+{"ts":"2026-09-26T16:31:14.125Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":1,"type":"n:Ada","result":{"model":"claude-haiku-4-5-20251001","agentId":"a43cbbca407a6af92"}}
+{"ts":"2026-09-26T16:31:14.808Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":2,"type":"n:Aegis","result":{"model":"claude-haiku-4-5-20251001","agentId":"ad50f9601e13dd054"}}
+{"ts":"2026-09-26T16:31:15.814Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":3,"type":"n:Aho","result":{"model":"claude-haiku-4-5-20251001","agentId":"a78f70ad393e97ad7"}}
+{"ts":"2026-09-26T16:31:16.655Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":4,"type":"n:AlKhwarizmi","result":{"model":"claude-haiku-4-5-20251001","agentId":"a813b644181a4a765"}}
+{"ts":"2026-09-26T16:31:17.540Z","hook":"agent.spawn.result","mode":"pre-tight-395","k":5,"type":"n:AlanKay","result":{"model":"claude-haiku-4-5-20251001","agentId":"ac5e6fcc60dcb700e"}}

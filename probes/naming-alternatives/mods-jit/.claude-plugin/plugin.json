@@ -1,0 +1,1 @@
+{ "name": "n", "version": "0.0.1", "description": "Throwaway probe: just-in-time callsign registration inside agent.spawn, hidden by agent.offer.", "author": { "name": "named-subagents (probe)" } }

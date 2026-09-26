@@ -1,0 +1,50 @@
+cd /tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-name &&  claude --model haiku --setting-sources project
+,local --allowedTools Bash Read
+bogdan@bogdan-System-Product-Name:/tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-name$ cd /tmp/claude-100
+0/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-name &&  claude --model haiku --setting-sources project,local --allowedTo
+ols Bash Read
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-name
+
+
+❯ Dispatch three general-purpose agents in ONE message, all with run_in_background true. Each one should: run 'sleep 5' with Bash, read /etc/hostname, run
+  'sleep 5', then reply done. Descriptions: 'check host alpha', 'check host beta', 'check host gamma'.
+
+● 3 background agents launched (↓ to manage)
+   ├ check host alpha
+   ├ check host beta
+   └ check host gamma
+
+● All three agents are now running in the background:
+  - Alpha (adf8588e646f65a5a)
+  - Beta (abded2d068307eb65)
+  - Gamma (ad3dfb60c79e59c16)
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents · ↓ to manage                                                                                         /rc
+
+  ● main
+  ◯ Hopper    check host alpha                                                                                                             2s · ↑ 21.9k tokens
+  ◯ Lovelace  check host beta                                                                                                              1s · ↓ 21.8k tokens
+  ◯ Noether   check host gamma                                                                                                             1s · ↓ 21.8k tokens
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

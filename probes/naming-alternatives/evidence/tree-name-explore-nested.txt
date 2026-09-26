@@ -1,0 +1,50 @@
+cd /tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-types &&  claude --model haiku --setting-sources projec
+t,local --allowedTools Bash Read Agent
+bogdan@bogdan-System-Product-Name:/tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-types$ cd /tmp/claude-10
+00/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-types &&  claude --model haiku --setting-sources project,local --allowed
+Tools Bash Read Agent
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1000/-home-bogdan-Dev-open-brain/7a86b2d5-aebe-4e95-a43a-cbae6328f6bb/scratchpad/tui-name-types
+
+
+❯ In ONE message dispatch two agents with run_in_background true: (1) subagent_type Explore, description 'scan etc', told to run 'sleep 10' with Bash then list
+  /etc and reply done; (2) subagent_type general-purpose, description 'nest parent', told to use the Agent tool to dispatch one general-purpose sub-agent
+  (description 'nest child', run_in_background false) that runs 'sleep 12' with Bash and replies ok, then reply done.
+
+● I'll dispatch both agents in parallel with background execution:
+
+● 2 background agents launched (↓ to manage)
+   ├ Explore (scan etc)
+   └ Agent (nest parent)
+
+● Both agents have been dispatched in the background:
+
+  1. Explore agent — scanning /etc after a 10-second sleep
+  2. General-purpose agent — nesting a child general-purpose agent that will sleep 12 seconds, then reporting back
+
+  You'll be notified automatically when they complete.
+
+✻ Waiting for 3 background agents to finish
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents · ↓ to manage                                                                                          /rc
+
+  ● main
+  ◯ Hopper         scan etc                                                                                                                9s · ↓ 10.7k tokens
+  ◯ Lovelace (+1)  nest parent                                                                                                             3s · ↓ 24.3k tokens
+
+
+
+
+
+
+
+
+
+
+
+
+

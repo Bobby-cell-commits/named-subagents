@@ -1,0 +1,20 @@
+exit=0
+I encountered a configuration issue. The system is reporting that a plugin hook is trying to dispatch to agents called 'n:Hopper' and 'n:Lovelace' which don't exist. The available agents are: claude, Explore, general-purpose, Plan, and statusline-setup.
+
+This suggests there's a hook configuration in your settings that's referencing non-existent agent types. You may want to check your Claude Code settings (likely in `.claude/settings.json` or `.claude/settings.local.json`) for any hooks that reference those agent names and either remove them or update them to use valid agent types.
+
+Would you like me to help investigate or fix your settings configuration?
+transcript: /home/bogdan/.claude/projects/-tmp-claude-1000--home-bogdan-Dev-open-brain-7a86b2d5-aebe-4e95-a43a-cbae6328f6bb-scratchpad-jit-pre-hide/02398e3e-5451-4afe-9824-984b3bf43329.jsonl
+main initial added= ['claude', 'Explore', 'general-purpose', 'Plan', 'statusline-setup'] removed= []
+{"ts":"2026-09-26T16:26:35.659Z","hook":"session.start","mode":"pre-hide","registered":8,"first":["n:Hopper","n:Lovelace","n:Noether"]}
+{"ts":"2026-09-26T16:26:39.512Z","hook":"agent.spawn.error","mode":"pre-hide","k":0,"type":"n:Hopper","error":"HooksError: a hook's subagentType 'n:Hopper' names no agent this call can dispatch (available: claude, Explore, general-purpose, Plan, statusline-setup)"}
+{"ts":"2026-09-26T16:26:40.184Z","hook":"agent.spawn.error","mode":"pre-hide","k":1,"type":"n:Lovelace","error":"HooksError: a hook's subagentType 'n:Lovelace' names no agent this call can dispatch (available: claude, Explore, general-purpose, Plan, statusline-setup)"}
+offer lines:
+{"ts":"2026-09-26T16:26:36.319Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Amundsen","isOffered":false}
+{"ts":"2026-09-26T16:26:36.319Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Hopper","isOffered":false}
+{"ts":"2026-09-26T16:26:36.319Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Ibn_Battuta","isOffered":false}
+{"ts":"2026-09-26T16:26:36.319Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Kovalevskaya","isOffered":false}
+{"ts":"2026-09-26T16:26:36.319Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Lovelace","isOffered":false}
+{"ts":"2026-09-26T16:26:36.320Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Noether","isOffered":false}
+{"ts":"2026-09-26T16:26:36.320Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Shackleton","isOffered":false}
+{"ts":"2026-09-26T16:26:36.320Z","hook":"agent.offer","mode":"pre-hide","agent":"n:Tereshkova","isOffered":false}
