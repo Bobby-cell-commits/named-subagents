@@ -1,0 +1,22 @@
+{
+  "name": "named-subagents-mod",
+  "version": "0.0.1",
+  "description": "Gives every subagent a themed name in the task tree (display only; the agent is not told its name).",
+  "author": { "name": "Bobby-cell-commits" },
+  "license": "MIT",
+  "userConfig": {
+    "theme": {
+      "type": "string",
+      "title": "Name pool",
+      "description": "auto picks the pool from the agent type and task; any other value always uses that pool.",
+      "default": "auto",
+      "options": ["auto", "explore", "code", "research", "reflect", "debug", "test", "review", "security", "design", "data", "orchestrate", "docs", "build", "default"]
+    },
+    "enabled": {
+      "type": "boolean",
+      "title": "Name subagents",
+      "description": "Turn naming off without uninstalling.",
+      "default": true
+    }
+  }
+}
