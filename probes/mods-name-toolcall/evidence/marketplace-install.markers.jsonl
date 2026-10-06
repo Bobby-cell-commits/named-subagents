@@ -1,0 +1,11 @@
+{"ts":"2026-10-02T12:33:35.323Z","hook":"session.start","cwd":"/tmp/claude-1000/-home-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/mkt-wd","root":"/tmp/claude-1000/-home-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/modsprobe-mkt/plugin","version":{"version":"2.1.287","base":"2.1.287","builtAt":"2026-10-01T16:02:06Z"}}
+{"ts":"2026-10-02T12:33:38.680Z","hook":"tool.call.Agent","tool_use_id":"toolu_01HiPi8izEfFbHpqmhD5KRNk","subagent_type":"general-purpose","description":"First test agent","setName":"Hopper"}
+{"ts":"2026-10-02T12:33:38.685Z","hook":"agent.spawn","tool_use_id":"toolu_01HiPi8izEfFbHpqmhD5KRNk","name":"Hopper","expected":"Hopper","reached":true,"description":"Hopper · First test agent","subagentType":"general-purpose","background":true}
+{"ts":"2026-10-02T12:33:38.697Z","hook":"tool.call.Agent.result","tool_use_id":"toolu_01HiPi8izEfFbHpqmhD5KRNk"}
+{"ts":"2026-10-02T12:33:38.707Z","hook":"agent.spawn.bound","agentId":"a8108f77e1b251503","expected":"Hopper","listed":{"id":"a8108f77e1b251503","description":"Hopper · First test agent","type":"general-purpose","status":"running","name":"Hopper"},"nameStuck":true}
+{"ts":"2026-10-02T12:33:39.271Z","hook":"tool.call.Agent","tool_use_id":"toolu_01LsLdZQRypixScbvBH3ehcZ","subagent_type":"general-purpose","description":"Second test agent","setName":"Lovelace"}
+{"ts":"2026-10-02T12:33:39.274Z","hook":"agent.spawn","tool_use_id":"toolu_01LsLdZQRypixScbvBH3ehcZ","name":"Lovelace","expected":"Lovelace","reached":true,"description":"Lovelace · Second test agent","subagentType":"general-purpose","background":true}
+{"ts":"2026-10-02T12:33:39.283Z","hook":"tool.call.Agent.result","tool_use_id":"toolu_01LsLdZQRypixScbvBH3ehcZ"}
+{"ts":"2026-10-02T12:33:39.292Z","hook":"agent.spawn.bound","agentId":"a3ae8584cfbc37bc1","expected":"Lovelace","listed":{"id":"a3ae8584cfbc37bc1","description":"Lovelace · Second test agent","type":"general-purpose","status":"running","name":"Lovelace"},"nameStuck":true}
+{"ts":"2026-10-02T12:33:39.666Z","hook":"turn.complete","agentId":"a8108f77e1b251503","name":"Hopper","status":"completed"}
+{"ts":"2026-10-02T12:33:40.396Z","hook":"turn.complete","agentId":"a3ae8584cfbc37bc1","name":"Lovelace","status":"completed"}

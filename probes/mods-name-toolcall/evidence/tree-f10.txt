@@ -1,0 +1,50 @@
+cd /tmp/claude-1000/-home-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/tree-wd &&  claude --model haiku --setting-sources project,local
+ --plugin-dir /home/bogdan/Dev/named-subagents/probes/mods-name-toolcall
+bogdan@bogdan-System-Product-Name:/tmp/claude-1000/-home-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/tree-wd$ cd /tmp/claude-1000/-hom
+e-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/tree-wd &&  claude --model haiku --setting-sources project,local --plugin-dir /home/bogd
+an/Dev/named-subagents/probes/mods-name-toolcall
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   /tmp/claude-1000/-home-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/tree-wd
+
+
+❯ Dispatch three general-purpose agents in ONE message, all with run_in_background true, each told to run sleep 15 via Bash and then reply ok. Then wait for
+  them.
+
+● I'll dispatch three general-purpose agents to run sleep commands in the background.
+
+● 3 background agents launched (↓ to manage)
+   ├ Sleep 15 seconds and reply
+   ├ Sleep 15 seconds and reply
+   └ Sleep 15 seconds and reply
+
+● Three agents are now running in the background. Waiting for their completion notifications...
+
+● ReadNotifications
+  ⎿  No queued notifications
+
+● The agents are still running (they're sleeping for 15 seconds). Let me check for notifications again in a moment.
+
+● ReadNotifications
+  ⎿  No queued notifications
+
+✽ Hullaballooing… (9s · ↓ 891 tokens · thought for 2s)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · esc to interrupt · ← for agents · ↓ to manage                                                                                         /rc
+
+  ● main
+  ◯ Hopper    Hopper · Sleep 15 seconds and reply                                                                                          6s · ↓ 21.9k tokens
+  ◯ Lovelace  Lovelace · Sleep 15 seconds and reply                                                                                        5s · ↓ 22.0k tokens
+  ◯ Turing    Turing · Sleep 15 seconds and reply                                                                                          4s · ↓ 22.0k tokens
+
+
+
+
+
+
+
+
+

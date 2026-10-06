@@ -1,0 +1,8 @@
+2026-10-02T12:33:34.818Z [DEBUG] Read hooks.json for plugin mods-name-toolcall (enabled=true): /tmp/claude-1000/-home-bogdan-Dev-open-brain/544891da-5b02-4a7d-94e2-a60162915e16/scratchpad/modsprobe-mkt/plugin/hooks/hooks.json
+2026-10-02T12:33:34.822Z [DEBUG] Checking plugin mods-name-toolcall: skillsPath=none, skillsPaths=0 paths
+2026-10-02T12:33:34.939Z [DEBUG] hooks module mods-name-toolcall@modsprobe loaded (worker, environment 1, tier user); events: session.start,tool.call,agent.spawn,turn.complete
+2026-10-02T12:33:34.944Z [DEBUG] engine.create: no plugin-provided interfaces; $ built for mods-name-toolcall,cc-plugin-agents-md,cc-plugin-telemetry
+2026-10-02T12:33:34.944Z [DEBUG] plugin.register: mods-name-toolcall (user, mods-name-toolcall@modsprobe), judged by core alone: admitted
+2026-10-02T12:33:34.967Z [DEBUG] Keeping /home/bogdan/.claude/plugins/cache/modsprobe/mods-name-toolcall: it still holds a directory, a symlink, a versioned archive or an entry of unknown type
+2026-10-02T12:33:35.326Z [DEBUG] hooks module mods-name-toolcall@modsprobe session.start settled in 23.5ms (worker hop, next() included)
+2026-10-02T12:33:38.710Z [DEBUG] hooks module mods-name-toolcall@modsprobe tool.call settled in 30.3ms (worker hop, next() included)

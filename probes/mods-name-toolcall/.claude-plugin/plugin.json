@@ -1,0 +1,6 @@
+{
+  "name": "mods-name-toolcall",
+  "version": "0.0.1",
+  "description": "Throwaway probe: does a tool.call rewrite of the Agent tool's `name` reach the spawn, the agent list and the task tree? Writes JSONL markers.",
+  "author": { "name": "named-subagents (probe)" }
+}

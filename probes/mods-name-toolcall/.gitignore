@@ -1,0 +1,6 @@
+markers.jsonl
+debug*.log
+run*.out
+node_modules/
+latest
+.claude-plugin/types/
