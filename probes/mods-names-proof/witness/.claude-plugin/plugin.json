@@ -1,0 +1,5 @@
+{
+  "name": "names-witness",
+  "version": "0.0.1",
+  "description": "Probe-only: records each spawned agent's name from $.agent.list() as JSONL markers, so a headless run of the names mod can be judged from files."
+}

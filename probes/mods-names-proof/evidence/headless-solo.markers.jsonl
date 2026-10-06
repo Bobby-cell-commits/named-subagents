@@ -1,0 +1,7 @@
+{"ts":"2026-10-06T10:45:38.402Z","hook":"session.start","version":{"version":"2.1.291","base":"2.1.291","builtAt":"2026-10-06T02:24:19Z"}}
+{"ts":"2026-10-06T10:45:42.063Z","hook":"agent.spawn","tool_use_id":"toolu_01MszZQ2o2oBcKUTK3Csf6bN","spawnName":"Legba","agentId":"aed35a40f2da8305c","listName":"Legba","type":"general-purpose","description":"Test agent 1"}
+{"ts":"2026-10-06T10:45:42.507Z","hook":"agent.spawn","tool_use_id":"toolu_01Y3AovdmCtYbW1BFLSu1Lce","spawnName":"Nasreddin","agentId":"a87b2b4ad573f5b0b","listName":"Nasreddin","type":"general-purpose","description":"Test agent 2"}
+{"ts":"2026-10-06T10:45:42.922Z","hook":"agent.spawn","tool_use_id":"toolu_01RjTtWahSjBvBw9dkxt7DH2","spawnName":"Sisyphus","agentId":"ad807cb06a8455570","listName":"Sisyphus","type":"general-purpose","description":"Test agent 3"}
+{"ts":"2026-10-06T10:45:43.419Z","hook":"turn.complete","agentId":"aed35a40f2da8305c","listName":"Legba","status":"idle"}
+{"ts":"2026-10-06T10:45:43.580Z","hook":"turn.complete","agentId":"a87b2b4ad573f5b0b","listName":"Nasreddin","status":"idle"}
+{"ts":"2026-10-06T10:45:44.000Z","hook":"turn.complete","agentId":"ad807cb06a8455570","listName":"Sisyphus","status":"idle"}

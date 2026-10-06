@@ -1,0 +1,50 @@
+cd /home/bogdan/.claude/jobs/f12b1204/tmp/tree-wd &&  claude --model haiku --setting-sources project,local --plugin-dir /home/bogdan/Dev/named-subagents/mod
+bogdan@bogdan-System-Product-Name:~/.claude/jobs/f12b1204/tmp/tree-wd$ cd /home/bogdan/.claude/jobs/f12b1204/tmp/tree-wd &&  claude --model haiku --setting-sour
+ces project,local --plugin-dir /home/bogdan/Dev/named-subagents/mod
+ ▐▛███▛█   Claude Code v2.1.291
+▝▜██████▀  Haiku 4.5 · Claude Max
+ ▝▝   ▝▝   ~/.claude/jobs/f12b1204/tmp/tree-wd
+
+
+❯ Dispatch three general-purpose agents in ONE message, all with run_in_background true, each told to run sleep 15 via Bash and then reply ok. Then wait for
+  them.
+
+● 3 background agents launched (↓ to manage)
+   ├ Agent 1 - sleep and reply
+   ├ Agent 2 - sleep and reply
+   └ Agent 3 - sleep and reply
+
+● Three agents dispatched. They're running sleep 15 in parallel and will notify when complete. Waiting for them now.
+
+✻ Waiting for 3 background agents to finish
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── named subagents package ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← for agents · ↓ to manage                                                                                          /rc
+
+  ● main
+  ◯ Turing      Agent 1 - sleep and reply                                                                                                  6s · ↓ 24.9k tokens
+  ◯ BernersLee  Agent 2 - sleep and reply                                                                                                  5s · ↓ 24.9k tokens
+  ◯ Guido       Agent 3 - sleep and reply                                                                                                  4s · ↓ 25.0k tokens
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
