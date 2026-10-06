@@ -37,7 +37,12 @@ claude plugin validate mod
 ```
 
 ## Run it
-`claude --plugin-dir mod`. Headless proof and TUI evidence: `probes/mods-names-proof/`.
+`claude --plugin-dir mod` for one session, or install it for every session from this folder
+(`.claude-plugin/marketplace.json` makes `mod/` a local marketplace; edits apply after `/reload-plugins`):
+```bash
+claude plugin marketplace add ~/Dev/named-subagents/mod
+claude plugin install named-subagents-mod@named-subagents-dev --scope user
+``` Headless proof and TUI evidence: `probes/mods-names-proof/`.
 
 ## Known limits
 - The name shows in the task tree and in `$.agent.list()`; the transcript's launch list and finish

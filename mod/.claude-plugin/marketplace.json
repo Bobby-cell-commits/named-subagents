@@ -1,0 +1,5 @@
+{
+  "name": "named-subagents-dev",
+  "owner": { "name": "Bobby-cell-commits" },
+  "plugins": [{ "name": "named-subagents-mod", "source": "./" }]
+}
