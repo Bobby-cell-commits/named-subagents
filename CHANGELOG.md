@@ -1,5 +1,9 @@
 # Changelog
 
+> **Retired (2026-10-06).** Replaced by [named-subagents-mod](https://github.com/Bobby-cell-commits/named-subagents-mod), a Claude Code mod
+> that needs Claude Code 2.1.287 or later and no Python. 0.7.2 is the last Python release; this
+> repository is archived and gets no further fixes.
+
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 

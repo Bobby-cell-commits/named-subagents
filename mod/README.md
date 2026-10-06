@@ -1,5 +1,8 @@
 # named-subagents mod (experimental, unreleased)
 
+> **Moved (2026-10-06)** to [named-subagents-mod](https://github.com/Bobby-cell-commits/named-subagents-mod).
+> This folder is the last copy kept here (`0bbd5c3`) and is not updated.
+
 A Claude Code mod (function hooks, CC 2.1.287+) that gives every subagent a themed name in the task
 tree, drawn from the same 395-name registry as the Python package. Names only: the agent is **not**
 told its name (the engine does not put a mod-set `name` into the subagent's context), so there is no

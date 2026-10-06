@@ -1,5 +1,9 @@
 # named-subagents
 
+> **Retired (2026-10-06).** Replaced by [named-subagents-mod](https://github.com/Bobby-cell-commits/named-subagents-mod), a Claude Code mod
+> that needs Claude Code 2.1.287 or later and no Python. 0.7.2 is the last Python release; this
+> repository is archived and gets no further fixes.
+
 **Distinct, themed, non-repeating names for parallel Claude Code subagents** — a
 userspace port of [Codex's per-instance `nickname_candidates`](https://developers.openai.com/codex/subagents).
 
