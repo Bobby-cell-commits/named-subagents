@@ -1,0 +1,14 @@
+# Interactive session, CC 2.1.291, 2026-10-06. Mod installed at user scope from a local folder
+# marketplace (named-subagents-mod@named-subagents-dev); 0.7.2 Python plugin DISABLED.
+# 8 general-purpose background agents (haiku) dispatched in ONE message, identical description.
+# Source: <session>/subagents/agent-<id>.meta.json `name` + first transcript entry timestamp.
+2026-10-06T10:58:07.089Z  Ritchie
+2026-10-06T10:58:09.168Z  Wozniak
+2026-10-06T10:58:11.481Z  Liskov
+2026-10-06T10:58:13.539Z  Hejlsberg
+2026-10-06T10:58:15.667Z  Carmack
+2026-10-06T10:58:18.462Z  AlKhwarizmi
+2026-10-06T10:58:23.197Z  Cerf
+2026-10-06T10:58:25.364Z  Lamport
+# All 8 distinct; each hand-back reached the parent under the same name. Starts ~2 s apart:
+# the engine serialized the dispatches, so no two draws overlapped live.
